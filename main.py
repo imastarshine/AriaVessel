@@ -58,7 +58,6 @@ def get_status() -> list[str]:
         return ["🤷 There are no torrents currently"]
 
     for i, d in enumerate(downloads):
-        print(vars(d))
         total = sum(f.length for f in d.files)
         size_str = src.text.format_size(total) if total > 0 else "unknown size"
         speed_str = src.text.format_speed(d.download_speed)
@@ -76,7 +75,8 @@ def get_status() -> list[str]:
         else:
             status_icon, status_desc = "⏳", d.status.capitalize()
 
-        bar = "📥 " + generate_progress_bar(d.progress / 100, 10) + " | "
+        progress_percent = d.progress / 100 if d.progress else 0.0
+        bar = "📥 " + generate_progress_bar(progress_percent, 10) + " | "
 
         message += (
             f"🆔 <code>{i}</code> | 📎 <b>{safe_name}</b>\n"
@@ -101,7 +101,9 @@ async def start(m):
                           "▶️ <code>/play</code> - Resume torrent(s)\n"
                           "🗑️ <code>/rm</code> - Remove torrent from client\n"
                           "🧹 <code>/del</code> - Delete torrent and files\n"
-                          "💿 <code>/upload</code> - Upload completed files to Yandex.Disk\n\n"
+                          "💿 <code>/upload</code> - Upload completed files to Yandex.Disk\n"
+                          "❌ <code>/upload_cancel</code> - Cancel uploading"
+                          "📊 <code>/upload_status</code> - Upload status\n\n"
                           "📎 Send <code>.torrent</code>, <code>.zip</code> archive, or <code>magnet:</code> link", parse_mode="HTML")
 
 
@@ -124,6 +126,14 @@ async def status(m: Message):
 @restricted
 async def upload_cmd(m: Message):
     global is_uploading, uploading_amount_files, uploading_current_file, uploading_current_file_number
+
+    if is_uploading:
+        await bot.reply_to(
+            m,
+            f"<b>A previous operation was still running. Wait until it's done.</b>",
+            parse_mode="HTML"
+        )
+        return
 
     try:
         logger.info(f"received upload command: {m.text}")
@@ -181,6 +191,10 @@ async def upload_cmd(m: Message):
         current_file_idx = 0
 
         for download in to_upload:
+            if not is_uploading:
+                logger.warning('stopping due to cancel request')
+                return
+
             base_dir = Path(download.dir)
             logger.info(f"processing download: {download.name} in {base_dir}")
             logger.info(f"download has {len(download.files)} files to upload")
@@ -241,6 +255,17 @@ async def upload_status_cmd(m: Message):
     )
 
 
+@bot.message_handler(commands=['upload_cancel'])
+@restricted
+async def upload_cancel(m: Message):
+    global is_uploading
+    if is_uploading:
+        is_uploading = False
+        await bot.reply_to(m, "🛑 <b>Upload cancelled.</b>", parse_mode="HTML")
+    else:
+        await bot.reply_to(m, "❌ <b>No active upload.</b>", parse_mode="HTML")
+
+
 def control_action(action: str, d: list[Download]):
     logger.info(f"download list: {d}")
     if action == "pause":
@@ -263,27 +288,12 @@ async def control(m: Message):
 
     try:
         parts = m.text.split()
+        if len(parts) < 2:
+            await bot.reply_to(m, "❌ Specify ID(s). Example: <code>/pause 0</code>", parse_mode="HTML")
+            return
         cmd = parts[0].lower().removeprefix("/")
         source_downloads = aria2.get_downloads()
         downloads, failed_list = src.text.parse_idx(parts[1], source_downloads)
-        # idx = parts[1]
-        # if idx.startswith("[") and idx.endswith("]"):
-        #     idx = src.text.parse_list(idx)
-        # elif idx.find(",") > 0 and not idx.startswith("[") and not idx.endswith("]"):
-        #     idx = src.text.parse_range(idx)
-        # elif idx.isdigit():
-        #     idx = int(idx)
-        # else:
-        #     logger.warning(f"Invalid command: {idx} for {cmd}")
-        #     await bot.reply_to(m, f"Can't parse {idx} correctly.")
-        #     return
-        #
-        # source_downloads = aria2.get_downloads()
-        # failed_list = []
-        # if isinstance(idx, list):
-        #     downloads, failed_list = multi_index_list(source_downloads, idx)
-        # else:
-        #     downloads = [source_downloads[idx]]
 
         message_parts = []
         message = ""
@@ -312,7 +322,7 @@ async def control(m: Message):
 
             await bot.reply_to(m, part)
     except Exception as e:
-        logger.exception(f"an exception occurred on control: {e}", exc_info=e)
+        logger.exception(f"an exception occurred on control: {e}")
         await bot.reply_to(
             m,
             f"❌ <b>An error occurred:</b> <code>{html.escape(str(e))}</code>\n\nDid you write a correct id?\nUsage: <code>/[resume,pause,rm,del] &lt;id&gt;</code>",
@@ -388,9 +398,9 @@ async def handle_source(m: Message):
                             InlineKeyboardButton("Cancel", callback_data=f"confirm_n", style="danger")
                         )
                     logger.debug(f"index: {index}, msg: {msg}")
-                    await bot.send_message(ADMIN_ID, html.escape(message), reply_markup=markup, parse_mode="HTML")
+                    await bot.send_message(ADMIN_ID, message, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
-        logger.exception(f"an error occurred on handle_source: {e}", exc_info=e)
+        logger.exception(f"an error occurred on handle_source: {e}")
         await bot.send_message(ADMIN_ID, f"❌ <b>Got error:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
     finally:
         if tmp_dir and tmp_dir.exists():
@@ -426,7 +436,7 @@ async def confirm_callback(call: CallbackQuery):
             # TODO: To try
             await bot.delete_message(call.message.chat.id, call.message.id)
     except Exception as e:
-        logger.exception(f"an error occurred on confirm_callback: {e}", exc_info=e)
+        logger.exception(f"an error occurred on confirm_callback: {e}")
         await bot.send_message(call.message.chat.id, text=f"❌ <b>Got error on confirmation:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
@@ -457,21 +467,19 @@ async def monitor():
 
                     known.add(d.gid)
         except Exception as e:
-            print(f"An exception occurred: {e}")
-            pass
+            logger.exception(f"an error occurred on monitor: {e}")
+            continue
 
         if len(message) > 0:
             message_parts.append(message)
 
         try:
-            logger.info(f"sending notification about {len(message_parts)} newly completed downloads")
             for index, msg in enumerate(message_parts):
                 if index == 0:
                     msg = "✅ Downloaded:\n\n" + msg
                 await bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
-            logger.info(f"notifications about completed downloads sent successfully")
         except Exception as e:
-            logger.exception(f"an error occurred on message send in monitor: {e}", exc_info=e)
+            logger.exception(f"an error occurred on message send in monitor: {e}")
 
 
 async def main():
