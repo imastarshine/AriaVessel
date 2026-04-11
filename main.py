@@ -96,13 +96,13 @@ def get_status() -> list[str]:
 @bot.message_handler(commands=['start'])
 @restricted
 async def start(m):
-    await bot.reply_to(m, "📊 /status\n"
-                          "⏸️ /pause (pauses torrent) - <id> | 0,2 (range) | [0, 3, 5] (list)\n"
-                          "▶️ /play (resume torrent) <id> | 0,2 (range) | [0, 3, 5] (list)\n"
-                          "🗑️ /rm (deleting torrent from client) <id> | 0,2 (range) | [0, 3, 5] (list)\n"
-                          "🧹 /del (deleting files and torrent) <id> | 0,2 (range) | [0, 3, 5] (list)\n"
-                          "💿 /upload (uploads torrent files to Yandex.Disk) <id> | 0,2 (range) | [0, 3, 5] (list)\n"
-                          "\nSend .torrent, .zip, magnet url")
+    await bot.reply_to(m, "📊 <b>Available commands:</b>\n\n"
+                          "⏸️ <code>/pause</code> - Pause torrent(s)\n"
+                          "▶️ <code>/play</code> - Resume torrent(s)\n"
+                          "🗑️ <code>/rm</code> - Remove torrent from client\n"
+                          "🧹 <code>/del</code> - Delete torrent and files\n"
+                          "💿 <code>/upload</code> - Upload completed files to Yandex.Disk\n\n"
+                          "📎 Send <code>.torrent</code>, <code>.zip</code> archive, or <code>magnet:</code> link", parse_mode="HTML")
 
 
 @bot.message_handler(commands=['status'])
@@ -130,7 +130,7 @@ async def upload_cmd(m: Message):
         logger.info(f"upload command from user {m.from_user.id}, message id: {m.message_id}")
         if not await disk.check():
             logger.error("yadisk token check failed")
-            await bot.reply_to(m, f"❌ Failed to get disk")
+            await bot.reply_to(m, f"❌ <b>Failed to get disk</b>", parse_mode="HTML")
             return
 
         parts = m.text.split()
@@ -160,7 +160,7 @@ async def upload_cmd(m: Message):
                 message = ""
 
         for failed_msg in message_parts:
-            await bot.reply_to(m, failed_msg)
+            await bot.reply_to(m, failed_msg, parse_mode="HTML")
 
         message_parts.clear()
 
@@ -170,7 +170,7 @@ async def upload_cmd(m: Message):
             await bot.reply_to(m, "❌ No files to upload")
             return
 
-        await bot.reply_to(m, "☁️ Starting to upload...")
+        await bot.reply_to(m, "☁️ <b>Starting to upload...</b>", parse_mode="HTML")
 
         total_files = sum(len(d.files) for d in to_upload)
         logger.info(f"starting upload of {total_files} files from {len(to_upload)} downloads")
@@ -212,7 +212,7 @@ async def upload_cmd(m: Message):
         uploading_current_file_number = 0
 
         logger.info(f"upload session finished: {success_uploaded_files}/{total_files} success")
-        await bot.reply_to(m, f"✅ All files uploaded! Successfully uploaded: {success_uploaded_files} files")
+        await bot.reply_to(m, f"✅ <b>All files uploaded!</b>\nSuccessfully uploaded: <code>{success_uploaded_files}</code> files", parse_mode="HTML")
 
     except Exception as e:
         is_uploading = False
@@ -220,7 +220,7 @@ async def upload_cmd(m: Message):
         uploading_current_file = ""
         uploading_current_file_number = 0
         logger.exception(f"critical error in upload_cmd: {e}")
-        await bot.reply_to(m, f"An error occurred: {e}")
+        await bot.reply_to(m, f"❌ <b>An error occurred:</b> <code>{e}</code>", parse_mode="HTML")
 
 
 @bot.message_handler(commands=['upload_status'])
@@ -230,13 +230,14 @@ async def upload_status_cmd(m: Message):
 
     if not is_uploading:
         logger.info("upload status requested but no active upload")
-        await bot.reply_to(m, f"❌ Not uploading right now")
+        await bot.reply_to(m, f"❌ <b>Not uploading right now</b>", parse_mode="HTML")
         return
 
     logger.info(f"upload status requested: {uploading_current_file_number}/{uploading_amount_files} files processed")
     await bot.reply_to(
         m,
-        f"📎 Uploading {uploading_current_file} ({uploading_current_file_number}/{uploading_amount_files})"
+        f"📎 <b>Uploading</b> <code>{html.escape(uploading_current_file)}</code> ({uploading_current_file_number}/{uploading_amount_files})",
+        parse_mode="HTML"
     )
 
 
@@ -288,17 +289,19 @@ async def control(m: Message):
         message = ""
         operation_results = control_action(cmd, downloads)
         for result, download in zip(operation_results, downloads):
+            safe_name = html.escape(download.name)
             if result is True:
-                message += f"✅📦 {download.name} ({download.gid})\n"
+                message += f"✅📦 <b>{safe_name}</b> (<code>{download.gid}</code>)\n"
             else:
-                message += f"❌📦 {download.name} ({download.gid})\n"
+                message += f"❌📦 <b>{safe_name}</b> (<code>{download.gid}</code>)\n"
 
             if len(message) > 3200:
                 message_parts.append(message)
                 message = ""
 
         for failed in failed_list:
-            message += f"❓ {failed}\n"
+            safe_failed = html.escape(str(failed))
+            message += f"❓ <b>{safe_failed}</b>\n"
 
         if len(message) > 0:
             message_parts.append(message)
@@ -312,7 +315,8 @@ async def control(m: Message):
         logger.exception(f"an exception occurred on control: {e}", exc_info=e)
         await bot.reply_to(
             m,
-            f"An error occurred: {e}. Did you write a correct id?\nUsage: /[resume,pause,rm,del] <id>"
+            f"❌ <b>An error occurred:</b> <code>{html.escape(str(e))}</code>\n\nDid you write a correct id?\nUsage: <code>/[resume,pause,rm,del] &lt;id&gt;</code>",
+            parse_mode="HTML"
         )
 
 
@@ -368,7 +372,8 @@ async def handle_source(m: Message):
                     message = ""
                     await asyncio.sleep(0.05)
 
-                message += f"📦 {d.name} ({src.text.format_size(get_total_size(d))})\n"
+                safe_name = html.escape(d.name)
+                message += f"📦 <b>{safe_name}</b> ({src.text.format_size(get_total_size(d))})\n"
 
             if len(message) > 0:
                 messages.append(message)
@@ -383,10 +388,10 @@ async def handle_source(m: Message):
                             InlineKeyboardButton("Cancel", callback_data=f"confirm_n", style="danger")
                         )
                     logger.debug(f"index: {index}, msg: {msg}")
-                    await bot.send_message(ADMIN_ID, message, reply_markup=markup)
+                    await bot.send_message(ADMIN_ID, html.escape(message), reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         logger.exception(f"an error occurred on handle_source: {e}", exc_info=e)
-        await bot.send_message(ADMIN_ID, f"Got error: {e}")
+        await bot.send_message(ADMIN_ID, f"❌ <b>Got error:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
     finally:
         if tmp_dir and tmp_dir.exists():
             shutil.rmtree(tmp_dir)
@@ -422,7 +427,7 @@ async def confirm_callback(call: CallbackQuery):
             await bot.delete_message(call.message.chat.id, call.message.id)
     except Exception as e:
         logger.exception(f"an error occurred on confirm_callback: {e}", exc_info=e)
-        await bot.send_message(call.message.chat.id, text=f"Got error on confirmation: {e}")
+        await bot.send_message(call.message.chat.id, text=f"❌ <b>Got error on confirmation:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 
 # ------------------------ #
@@ -444,7 +449,8 @@ async def monitor():
                     # TODO: We can add auto disable seeding
 
                     logger.info(f"new download completed: {d.name} ({d.gid}), size: {src.text.format_size(total)}")
-                    message += f"📦 {d.name} ({d.gid})\n"
+                    safe_name = html.escape(d.name)
+                    message += f"📦 <b>{safe_name}</b> (<code>{d.gid}</code>)\n"
                     if len(message) > 3200:
                         message_parts.append(message)
                         message = ""
@@ -462,7 +468,7 @@ async def monitor():
             for index, msg in enumerate(message_parts):
                 if index == 0:
                     msg = "✅ Downloaded:\n\n" + msg
-                await bot.send_message(ADMIN_ID, msg)
+                await bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
             logger.info(f"notifications about completed downloads sent successfully")
         except Exception as e:
             logger.exception(f"an error occurred on message send in monitor: {e}", exc_info=e)
