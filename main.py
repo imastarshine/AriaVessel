@@ -102,9 +102,10 @@ async def start(m):
                           "🗑️ <code>/rm</code> - Remove torrent from client\n"
                           "🧹 <code>/del</code> - Delete torrent and files\n"
                           "💿 <code>/upload</code> - Upload completed files to Yandex.Disk\n"
-                          "❌ <code>/upload_cancel</code> - Cancel uploading"
+                          "❌ <code>/upload_cancel</code> - Cancel uploading\n"
                           "📊 <code>/upload_status</code> - Upload status\n\n"
-                          "📎 Send <code>.torrent</code>, <code>.zip</code> archive, or <code>magnet:</code> link", parse_mode="HTML")
+                          "📎 Send <code>.torrent</code>, <code>.zip</code> archive, or <code>magnet:</code> link",
+                       parse_mode="HTML")
 
 
 @bot.message_handler(commands=['status'])
@@ -177,7 +178,7 @@ async def upload_cmd(m: Message):
         if len(to_upload) <= 0:
             logger.info("no completed downloads found to upload")
             logger.info(f"parsed {len(downloads)} downloads, {len(failed_list)} failed to parse")
-            await bot.reply_to(m, "❌ No files to upload")
+            await bot.reply_to(m, "❌ <b>No files to upload</b>", parse_mode='HTML')
             return
 
         await bot.reply_to(m, "☁️ <b>Starting to upload...</b>", parse_mode="HTML")
@@ -279,6 +280,38 @@ def control_action(action: str, d: list[Download]):
     return None
 
 
+@bot.message_handler(commands=["inspect"])
+async def inspect_command(m: Message):
+    try:
+        idx = int(m.text.split()[1])
+        dls = aria2.get_downloads()
+        if idx >= len(dls):
+            await bot.reply_to(m, "❌ <b>The index you specified doesnt exist</b>", parse_mode="HTML")
+            return
+
+        d = dls[idx]
+
+        files_info = "\n".join([f"📄 {f.path.split('/')[-1]} ({src.text.format_size(f.length)})" for f in d.files[:5]])
+        if len(d.files) > 5:
+            files_info += f"\n... and {len(d.files) - 5} files more"
+
+        report = (
+            f"🔍 <b>Inspection for</b>\n"
+            f"📎 <code>{html.escape(d.name)}</code>\n\n"
+            f"🆔 GID: <code>{d.gid}</code>\n"
+            f"🚦 Status: <b>{d.status}</b>\n"
+            f"📍 Path: <code>{d.dir}</code>\n"
+            f"👥 Peers: {d.connections}\n"
+            f"🧲 Magnet: {'Yes' if d.is_metadata else 'No'}\n"
+            f"⚠️ Error: {d.error_message if d.error_message else 'no'}\n\n"
+            f"<b>Files:</b>\n{files_info}"
+        )
+
+        await bot.send_message(m.chat.id, report, parse_mode="HTML")
+    except Exception as e:
+        await bot.reply_to(m, f"❌ <b>An error on inspection</b>: {e}", parse_mode="HTML")
+
+
 @bot.message_handler(commands=['pause', 'resume', 'rm', 'del'])
 @restricted
 async def control(m: Message):
@@ -299,6 +332,7 @@ async def control(m: Message):
         message = ""
         operation_results = control_action(cmd, downloads)
         for result, download in zip(operation_results, downloads):
+            logger.info(f"result={result}, download name='{download}' {download.name} + gid {download.gid}")
             safe_name = html.escape(download.name)
             if result is True:
                 message += f"✅📦 <b>{safe_name}</b> (<code>{download.gid}</code>)\n"
@@ -310,8 +344,7 @@ async def control(m: Message):
                 message = ""
 
         for failed in failed_list:
-            safe_failed = html.escape(str(failed))
-            message += f"❓ <b>{safe_failed}</b>\n"
+            message += f"❓ {failed}\n"
 
         if len(message) > 0:
             message_parts.append(message)
@@ -320,7 +353,7 @@ async def control(m: Message):
             if index == 0:
                 part = ACTION_TO_TEXT.get(cmd) + "\n\n" + part
 
-            await bot.reply_to(m, part)
+            await bot.reply_to(m, part, parse_mode='HTML')
     except Exception as e:
         logger.exception(f"an exception occurred on control: {e}")
         await bot.reply_to(
@@ -349,7 +382,7 @@ async def handle_source(m: Message):
                 with archive_path.open("wb") as f:
                     f.write(content)
 
-                with zipfile.ZipFile(archive_path, 'r') as z:
+                with zipfile.ZipFile(archi8ve_path, 'r') as z:
                     z.extractall(tmp_dir)
 
                 for f in tmp_dir.rglob('*.torrent'):
