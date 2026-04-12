@@ -292,9 +292,9 @@ async def inspect_command(m: Message):
 
         d = dls[idx]
 
-        files_info = "\n".join([f"📄 {f.path.split('/')[-1]} ({src.text.format_size(f.length)})" for f in d.files[:5]])
+        files_info = "\n".join([f"📄 {f.path.name} ({src.text.format_size(f.length)})" for f in d.files[:5]])
         if len(d.files) > 5:
-            files_info += f"\n... and {len(d.files) - 5} files more"
+            files_info += f"\n... and {len(d.files)-5} files more"
 
         report = (
             f"🔍 <b>Inspection for</b>\n"
