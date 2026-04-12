@@ -103,7 +103,8 @@ async def start(m):
                           "🧹 <code>/del</code> - Delete torrent and files\n"
                           "💿 <code>/upload</code> - Upload completed files to Yandex.Disk\n"
                           "❌ <code>/upload_cancel</code> - Cancel uploading\n"
-                          "📊 <code>/upload_status</code> - Upload status\n\n"
+                          "📊 <code>/upload_status</code> - Upload status\n"
+                          "🔎 <code>/inspect</code> - Torrent inspect\n\n"
                           "📎 Send <code>.torrent</code>, <code>.zip</code> archive, or <code>magnet:</code> link",
                        parse_mode="HTML")
 
@@ -382,7 +383,7 @@ async def handle_source(m: Message):
                 with archive_path.open("wb") as f:
                     f.write(content)
 
-                with zipfile.ZipFile(archi8ve_path, 'r') as z:
+                with zipfile.ZipFile(archive_path, 'r') as z:
                     z.extractall(tmp_dir)
 
                 for f in tmp_dir.rglob('*.torrent'):
