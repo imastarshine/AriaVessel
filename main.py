@@ -6,6 +6,7 @@ import typing
 import src.text
 import html
 from pathlib import Path
+import re
 
 from aria2p import Download
 from telebot.async_telebot import AsyncTeleBot
@@ -15,6 +16,7 @@ from src.logger import logger, cleanup_old_logs
 from src.shared import ADMIN_ID, BOT_TOKEN, ARIA2_SECRET
 from src.text import generate_progress_bar
 from src.ydisk import YDisk
+from src.http_client import get_file_metadata
 
 ACTION_TO_TEXT = {
     "pause": "⏸️ Paused",
@@ -119,7 +121,7 @@ async def status(m: Message):
         logger.info("no active torrents found")
     else:
         logger.info(f"returning status of {len(torrent_status)} torrent(s)")
-        
+
     for msg in torrent_status:
         await bot.reply_to(m, msg, parse_mode="HTML")
 
@@ -228,7 +230,9 @@ async def upload_cmd(m: Message):
         uploading_current_file_number = 0
 
         logger.info(f"upload session finished: {success_uploaded_files}/{total_files} success")
-        await bot.reply_to(m, f"✅ <b>All files uploaded!</b>\nSuccessfully uploaded: <code>{success_uploaded_files}</code> files", parse_mode="HTML")
+        await bot.reply_to(m,
+                           f"✅ <b>All files uploaded!</b>\nSuccessfully uploaded: <code>{success_uploaded_files}</code> files",
+                           parse_mode="HTML")
 
     except Exception as e:
         is_uploading = False
@@ -294,7 +298,7 @@ async def inspect_command(m: Message):
 
         files_info = "\n".join([f"📄 {f.path.name} ({src.text.format_size(f.length)})" for f in d.files[:5]])
         if len(d.files) > 5:
-            files_info += f"\n... and {len(d.files)-5} files more"
+            files_info += f"\n... and {len(d.files) - 5} files more"
 
         report = (
             f"🔍 <b>Inspection for</b>\n"
@@ -373,7 +377,39 @@ async def handle_source(m: Message):
     added = []
     try:
         if m.content_type == 'document':
-            if m.document.file_name.endswith('.zip'):
+            # Handle .txt files
+            if m.document.file_name.endswith('.txt'):
+                info = await bot.get_file(m.document.file_id)
+                content = await bot.download_file(info.file_path)
+                text_content = content.decode('utf-8')
+                
+                # Extract links from text file
+                links = re.findall(r'magnet:\S+|https?://\S+', text_content)
+                
+                for link in links:
+                    link = link.strip()  # Remove any whitespace
+                    if link.startswith('magnet:'):
+                        try:
+                            added.append(aria2.add_magnet(link, options={"pause": "true"}))
+                            logger.info(f"Added magnet link from txt file: {link}")
+                        except Exception as e:
+                            logger.error(f"Failed to add magnet link {link}: {e}")
+                            await bot.send_message(ADMIN_ID, f"❌ Failed to add magnet link: {e}")
+                    elif link.startswith('http://') or link.startswith('https://'):
+                        try:
+                            metadata = await get_file_metadata(link)
+                            if metadata['success']:
+                                added.append(aria2.add_uris([link], options={"pause": "true"}))
+                                logger.info(f"Added HTTP link from txt file: {link}")
+                            else:
+                                logger.error(f"Failed to get metadata for {link}: {metadata['error']}")
+                                await bot.send_message(ADMIN_ID, f"❌ Failed to get metadata for {link}: {metadata['error']}")
+                        except Exception as e:
+                            logger.error(f"Failed to add HTTP link {link}: {e}")
+                            await bot.send_message(ADMIN_ID, f"❌ Failed to add HTTP link: {e}")
+
+            # Handle .zip files
+            elif m.document.file_name.endswith('.zip'):
                 tmp_dir = Path() / f"tmp_{m.message_id}"
                 tmp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -388,6 +424,8 @@ async def handle_source(m: Message):
 
                 for f in tmp_dir.rglob('*.torrent'):
                     added.append(aria2.add_torrent(f, options={"pause": "true"}))
+
+            # Handle .torrent files
             elif m.document.file_name.endswith('.torrent'):
                 tmp_dir = Path() / f"tmp_{m.message_id}"
                 tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -401,8 +439,31 @@ async def handle_source(m: Message):
 
                 added.append(aria2.add_torrent(torrent_path, options={"pause": "true"}))
                 torrent_path.unlink(missing_ok=True)
-        elif m.text and m.text.startswith('magnet:'):
-            added.append(aria2.add_magnet(m.text, options={"pause": "true"}))
+
+        # Handle text messages
+        elif m.text:
+            # Handle magnet links
+            if m.text.startswith('magnet:'):
+                try:
+                    added.append(aria2.add_magnet(m.text, options={"pause": "true"}))
+                    logger.info(f"Added magnet link: {m.text}")
+                except Exception as e:
+                    logger.error(f"Failed to add magnet link: {e}")
+                    await bot.send_message(ADMIN_ID, f"❌ Failed to add magnet link: {e}")
+            
+            # Handle HTTP/HTTPS links
+            elif m.text.startswith('http://') or m.text.startswith('https://'):
+                try:
+                    metadata = await get_file_metadata(m.text)
+                    if metadata['success']:
+                        added.append(aria2.add_uris([m.text], options={"pause": "true"}))
+                        logger.info(f"Added HTTP link: {m.text}")
+                    else:
+                        logger.error(f"Failed to get metadata for {m.text}: {metadata['error']}")
+                        await bot.send_message(ADMIN_ID, f"❌ Failed to get metadata for {m.text}: {metadata['error']}")
+                except Exception as e:
+                    logger.error(f"Failed to add HTTP link: {e}")
+                    await bot.send_message(ADMIN_ID, f"❌ Failed to add HTTP link: {e}")
 
         logger.info(f"Added {len(added)} new torrents")
         if added:
@@ -444,7 +505,6 @@ async def handle_source(m: Message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_"))
 @restricted
 async def confirm_callback(call: CallbackQuery):
-    # gids: list[aria2p.Download] = pending_torrents.pop(ADMIN_ID, [])
     gids: list[str] = pending_torrents.pop(ADMIN_ID, [])
     logger.debug(f"pending_torrents: {pending_torrents}")
 
@@ -471,7 +531,9 @@ async def confirm_callback(call: CallbackQuery):
             await bot.delete_message(call.message.chat.id, call.message.id)
     except Exception as e:
         logger.exception(f"an error occurred on confirm_callback: {e}")
-        await bot.send_message(call.message.chat.id, text=f"❌ <b>Got error on confirmation:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
+        await bot.send_message(call.message.chat.id,
+                               text=f"❌ <b>Got error on confirmation:</b> <code>{html.escape(str(e))}</code>",
+                               parse_mode="HTML")
 
 
 # ------------------------ #
@@ -521,21 +583,21 @@ async def main():
     cleanup_old_logs(days=14)
     logger.info("starting main bot")
     # TODO: Remo disk check on main(), and add bot log for this
-    
+
     try:
         await disk.init()
         logger.info("yandex disk initialized successfully")
     except Exception as e:
         logger.error(f"failed to initialize yandex disk: {e}")
         raise
-        
+
     try:
         downloads = aria2.get_downloads()
         logger.info(f"connected to aria2, {len(downloads)} active downloads")
     except Exception as e:
         logger.error(f"failed to connect to aria2: {e}")
         raise
-        
+
     asyncio.create_task(monitor())
     logger.info("monitoring task started")
     await bot.infinity_polling()
