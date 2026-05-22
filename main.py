@@ -1,10 +1,17 @@
 import asyncio
+from itertools import groupby
+
 import aria2p
 import zipfile
 import shutil
 import typing
+
+from telebot import asyncio_filters
+from telebot.states import StatesGroup, State
+
 import src.text
 import html
+import src.configs
 from pathlib import Path
 import re
 
@@ -35,9 +42,15 @@ uploading_amount_files = 0
 uploading_current_file = ""
 uploading_current_file_number = 0
 
+bot.add_custom_filter(asyncio_filters.StateFilter(bot))
+
+
+class UserSteps(StatesGroup):
+    waiting_for_setting_int_value = State()
+
 
 def restricted(func: typing.Callable) -> typing.Callable:
-    async def wrapper(message: Message, *args, **kwargs):
+    async def wrapper(message: Message | CallbackQuery, *args, **kwargs):
         if message.from_user.id == ADMIN_ID:
             return await func(message, *args, **kwargs)
         else:
@@ -45,6 +58,14 @@ def restricted(func: typing.Callable) -> typing.Callable:
         return False
 
     return wrapper
+
+
+# def bot_logger(func: typing.Callable) -> typing.Callable:
+#     async def wrapper(*args, **kwargs):
+#         try:
+#          return await func(*args, **kwargs)
+#
+#     return wrapper
 
 
 def get_total_size(download):
@@ -367,6 +388,122 @@ async def control(m: Message):
             parse_mode="HTML"
         )
 
+CATEGORIES_REGEX = r"([a-zA-Z]+)_([a-zA-Z]+)_"
+
+
+def get_categories(item):
+    key, _ = item
+    match = re.search(CATEGORIES_REGEX, key)
+    if match:
+        return match.group(1), match.group(2)
+    return "other", "keys"
+
+
+def generate_settings_keyboard_markup() -> InlineKeyboardMarkup:
+    config_dict = src.configs.config.to_dict()
+    markup = InlineKeyboardMarkup(row_width=1)
+
+    sorted_items = sorted(config_dict.items(), key=get_categories)
+
+    for (cat1, cat2), group in groupby(sorted_items, key=get_categories):
+        header_btn = InlineKeyboardButton(text=f"{cat1} | {cat2}", callback_data="ignore")
+        markup.add(header_btn)
+
+        for key, value in group:
+            callback_value = key if len(key) <= 50 else key[:50]
+            style = ((src.text.boolean_to_telegram_style(value) if isinstance(value, bool) else None)
+                     or "Primary")
+
+            item_btn = InlineKeyboardButton(
+                text=f"{src.configs.config.get_pretty_label(key)}"
+                     f": {src.text.boolean_to_human_readable_string(value) if isinstance(value, bool) else value}",
+                callback_data=f"e:{callback_value}",
+                style=style
+            )
+            print(key, value, item_btn.text, item_btn.callback_data, item_btn.style)
+            markup.add(item_btn)
+
+    return markup
+
+
+@bot.message_handler(commands=["settings"])
+@restricted
+async def settings_command(m: Message):
+    markup = generate_settings_keyboard_markup()
+    await bot.reply_to(m, text="<b>Bot settings...</b>", parse_mode="HTML", reply_markup=markup)
+
+
+@bot.message_handler(state=UserSteps.waiting_for_setting_int_value)
+async def set_int_config_item(m: Message) -> None:
+    try:
+        print("SET!", m, m.text)
+        user_message = m.text
+
+        async with bot.retrieve_data(m.from_user.id, m.chat.id) as data:
+            setting_key = data.get('setting_key')
+            helper_msg_id = data.get('helper_message_id')
+            original_markup_message_id = data.get('original_markup_message_id')
+
+        try:
+            int(user_message)
+        except (ValueError, TypeError):
+            await bot.delete_message(chat_id=m.chat.id, message_id=m.message_id)
+            await bot.delete_message(chat_id=m.chat.id, message_id=helper_msg_id)
+            await bot.send_message(chat_id=m.chat.id, text="❌ <b>The value must be an integer</b>", parse_mode="HTML")
+            # await bot.delete_state(m.from_user.id, m.chat.id)
+            return
+
+        setattr(src.configs.config, setting_key, int(user_message))
+        src.configs.config.save()
+
+        new_value = getattr(src.configs.config, setting_key)
+        await bot.send_message(
+            chat_id=m.chat.id,
+            text=f"Setting <code>{setting_key}</code> has been updated to <code>{new_value}</code>",
+            parse_mode="HTML"
+        )
+        await bot.delete_message(chat_id=m.chat.id, message_id=helper_msg_id)
+        await bot.delete_message(chat_id=m.chat.id, message_id=m.message_id)
+
+        await bot.edit_message_reply_markup(
+            chat_id=m.chat.id,
+            message_id=original_markup_message_id,
+            reply_markup=generate_settings_keyboard_markup()
+        )
+    except Exception as e:
+        logger.error(f"error while handling set int config state step: {e}", exc_info=e)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("e:"))
+@restricted
+async def process_settings_callback(call: CallbackQuery):
+    setting = call.data.removeprefix("e:")
+    value = getattr(src.configs.config, setting)
+    if isinstance(value, bool):
+        setattr(src.configs.config, setting, not value)
+        await bot.answer_callback_query(call.id, text=f"Changed {setting} to {not value}")
+        await bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=generate_settings_keyboard_markup()
+        )
+        src.configs.config.save()
+    elif isinstance(value, int):
+        message = await bot.send_message(
+            chat_id=call.from_user.id,
+            text=f"Enter a new number for <code>{setting}</code>",
+            parse_mode="HTML"
+        )
+        try:
+            await bot.set_state(call.from_user.id, UserSteps.waiting_for_setting_int_value, call.message.chat.id)
+            async with bot.retrieve_data(call.from_user.id, call.message.chat.id) as data:
+                data['setting_key'] = setting
+                data['helper_message_id'] = message.message_id
+                data['original_markup_message_id'] = call.message.message_id
+        except Exception as e:
+            logger.exception(f"an error occurred on set int value for setting: {setting}", exc_info=e)
+    else:
+        await bot.answer_callback_query(call.id, text="Cannot change this")
 
 @bot.message_handler(content_types=['document', 'text'])
 @restricted
@@ -382,12 +519,11 @@ async def handle_source(m: Message):
                 info = await bot.get_file(m.document.file_id)
                 content = await bot.download_file(info.file_path)
                 text_content = content.decode('utf-8')
-                
-                # Extract links from text file
+
                 links = re.findall(r'magnet:\S+|https?://\S+', text_content)
                 
                 for link in links:
-                    link = link.strip()  # Remove any whitespace
+                    link = link.strip()
                     if link.startswith('magnet:'):
                         try:
                             added.append(aria2.add_magnet(link, options={"pause": "true"}))
@@ -604,4 +740,6 @@ async def main():
 
 
 if __name__ == "__main__":
+    src.configs.config.load()
     asyncio.run(main())
+    src.configs.config.save()

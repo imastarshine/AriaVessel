@@ -6,6 +6,14 @@ FILL = "█"
 EMPTY = "░"
 
 
+def boolean_to_telegram_style(value: bool) -> str:
+    return "success" if value else "danger"
+
+
+def boolean_to_human_readable_string(boolean_value: bool) -> str:
+    return "On" if boolean_value is True else "Off"
+
+
 def generate_progress_bar(percent: float, width=20):
     filled_length = int(width * percent)
 
