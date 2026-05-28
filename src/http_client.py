@@ -6,24 +6,20 @@ from urllib.parse import urlparse, unquote
 from curl_cffi import requests
 
 
-@dataclasses.dataclass(init=False)
+@dataclasses.dataclass
 class FileMetadataResult:
-    def __init__(self):
-        self.success: bool = False
-        self.filename: str = ''
-        self.size: int | None = None
-        self.content_type: str = ""
-        self.status_code: int | None = None
-        self.error: str = ""
+    success: bool = False
+    filename: str = ''
+    size: int | None = None
+    content_type: str = ""
+    status_code: int | None = None
+    error: str = ""
 
 
 def extract_filename_from_url(url: str) -> str:
     path = urlparse(url).path
-    filename = unquote(path.split('/')[-1])
-    if not filename:
-        filename = 'unknown'
-    return filename
-
+    filename = path.split('/')[-1]
+    return unquote(filename) if filename else 'unknown'
 
 def extract_filename_from_disposition(disposition: str) -> str | None:
     if not disposition:
@@ -33,10 +29,9 @@ def extract_filename_from_disposition(disposition: str) -> str | None:
     if match:
         charset = match.group(1) or 'utf-8'
         try:
-            filename = unquote(match.group(2), encoding=charset)
+            return unquote(match.group(2), encoding=charset)
         except LookupError:
-            filename = unquote(match.group(2))
-        return filename
+            return unquote(match.group(2))
 
     match = re.search(r"filename=\"([^\"]+)\"", disposition, re.IGNORECASE)
     if match:
@@ -66,9 +61,19 @@ async def get_file_metadata(url: str) -> FileMetadataResult:
                 method="HEAD",
                 url=url,
                 allow_redirects=True,
-                timeout=30,
-                impersonate="chrome146"
+                timeout=15,
+                impersonate="chrome"
             )
+
+            if response.status_code in [400, 403, 405, 501]:
+                response = await session.request(
+                    method="GET",
+                    url=url,
+                    allow_redirects=True,
+                    timeout=15,
+                    stream=True,  # Важно: не скачиваем тело файла
+                    impersonate="chrome"
+                )
 
             metadata.status_code = response.status_code
 

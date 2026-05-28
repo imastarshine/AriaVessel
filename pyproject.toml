@@ -1,6 +1,6 @@
 [project]
 name = "trrnt-bot"
-version = "0.0.9"
+version = "0.1.0"
 description = ""
 authors = [
     {name = "None"}
@@ -16,7 +16,9 @@ dependencies = [
     "python-dotenv (>=1.2.2,<2.0.0)",
     "httpx (>=0.28.1,<0.29.0)",
     "aiosqlite (>=0.22.1,<0.23.0)",
-    "curl-cffi (>=0.15.0,<0.16.0)"
+    "curl-cffi (>=0.15.0,<0.16.0)",
+    "python-slugify (>=8.0.4,<9.0.0)",
+    "transliterate (>=1.10.2,<2.0.0)"
 ]
 
 

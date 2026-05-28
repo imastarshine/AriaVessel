@@ -1,3 +1,4 @@
+from transliterate import translit, detect_language
 from aria2p import Download
 
 from src.logger import logger
@@ -64,6 +65,14 @@ def multi_index_list(source: list, indexes: list[int]) -> (list, list):
             failed.append(index)
             logger.error(f"Index {index} out of range.")
     return result, failed
+
+
+def auto_translit(text: str) -> str:
+    lang_code = detect_language(text)
+
+    if lang_code:
+        return translit(text, lang_code, reversed=True)
+    return text
 
 
 def parse_idx(idx: str, aria_downloads: list[Download]) -> tuple[list[Download], list[int | str]]:

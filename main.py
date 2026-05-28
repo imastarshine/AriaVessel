@@ -6,6 +6,8 @@ import zipfile
 import shutil
 import typing
 
+import telebot.asyncio_helper
+from slugify import slugify
 from telebot import asyncio_filters
 from telebot.states import StatesGroup, State
 
@@ -23,7 +25,7 @@ from src.logger import logger, cleanup_old_logs
 from src.shared import ADMIN_ID, BOT_TOKEN, ARIA2_SECRET
 from src.text import generate_progress_bar
 from src.ydisk import YDisk
-from src.http_client import get_file_metadata
+from src.http_client import get_file_metadata, FileMetadataResult
 
 ACTION_TO_TEXT = {
     "pause": "⏸️ Paused",
@@ -35,7 +37,7 @@ ACTION_TO_TEXT = {
 bot = AsyncTeleBot(BOT_TOKEN)
 aria2 = aria2p.API(aria2p.Client(host="http://localhost", port=6800, secret=ARIA2_SECRET))
 disk = YDisk()
-pending_torrents = {}
+pending_processes = {}
 
 is_uploading = False
 uploading_amount_files = 0
@@ -420,7 +422,6 @@ def generate_settings_keyboard_markup() -> InlineKeyboardMarkup:
                 callback_data=f"e:{callback_value}",
                 style=style
             )
-            print(key, value, item_btn.text, item_btn.callback_data, item_btn.style)
             markup.add(item_btn)
 
     return markup
@@ -436,19 +437,26 @@ async def settings_command(m: Message):
 @bot.message_handler(state=UserSteps.waiting_for_setting_int_value)
 async def set_int_config_item(m: Message) -> None:
     try:
-        print("SET!", m, m.text)
+        logger.info(f"[set_int_config]: received a message from: {m.from_user.id}")
         user_message = m.text
 
         async with bot.retrieve_data(m.from_user.id, m.chat.id) as data:
             setting_key = data.get('setting_key')
             helper_msg_id = data.get('helper_message_id')
             original_markup_message_id = data.get('original_markup_message_id')
+        logger.info(
+            f"[set_int_config]: settings_key: {setting_key} | helper_msg_id: {helper_msg_id} "
+            f"| orig_msmg_id: {original_markup_message_id}"
+        )
 
         try:
             int(user_message)
         except (ValueError, TypeError):
             await bot.delete_message(chat_id=m.chat.id, message_id=m.message_id)
-            await bot.delete_message(chat_id=m.chat.id, message_id=helper_msg_id)
+            try:
+                await bot.delete_message(chat_id=m.chat.id, message_id=helper_msg_id)
+            except telebot.asyncio_helper.ApiTelegramException:
+                pass
             await bot.send_message(chat_id=m.chat.id, text="❌ <b>The value must be an integer</b>", parse_mode="HTML")
             # await bot.delete_state(m.from_user.id, m.chat.id)
             return
@@ -470,6 +478,7 @@ async def set_int_config_item(m: Message) -> None:
             message_id=original_markup_message_id,
             reply_markup=generate_settings_keyboard_markup()
         )
+        await bot.delete_state(m.from_user.id, m.chat.id)
     except Exception as e:
         logger.error(f"error while handling set int config state step: {e}", exc_info=e)
 
@@ -505,13 +514,74 @@ async def process_settings_callback(call: CallbackQuery):
     else:
         await bot.answer_callback_query(call.id, text="Cannot change this")
 
+
+def get_uri_options(metadata: src.http_client.FileMetadataResult) -> dict[str, str]:
+    options = {
+        "pause": "true"
+    }
+    if src.configs.config.uri_filename_rename:
+        file_path = Path(metadata.filename)
+        file_suffix = file_path.suffix
+        new_file_name = file_path.stem
+
+        if src.configs.config.uri_filename_translit:
+            new_file_name = src.text.auto_translit(new_file_name)
+
+        if src.configs.config.uri_filename_slugify:
+            new_file_name = slugify(new_file_name)
+
+        if 0 < src.configs.config.uri_filename_max_length < len(new_file_name):
+            new_file_name = new_file_name[:src.configs.config.uri_filename_max_length]
+
+        options["out"] = f"{new_file_name}{file_suffix}"
+
+    return options
+
+
+async def process_magnet_link(link: str):
+    try:
+        download = aria2.add_magnet(link, options={"pause": "true"})
+        logger.info(f"Added magnet link: {link}")
+        return download
+    except Exception as e:
+        logger.error(f"Failed to add magnet link {link}: {e}")
+        await bot.send_message(ADMIN_ID, f"❌ Failed to add magnet link: {e}")
+        return None
+
+
+async def process_http_link(link: str):
+    try:
+        logger.debug(f"Fetching http url '{link}'.")
+        metadata = await get_file_metadata(link)
+        logger.info(f"Metadata fetched successfully: {metadata}")
+
+        if metadata.success:
+            options = get_uri_options(metadata)
+            download = aria2.add_uris([link], options=options)
+            logger.info(f"Added HTTP link: {link}")
+            return download, metadata
+        else:
+            logger.error(
+                f"Failed to get metadata for {link} | Error = {metadata.error} | Code = {metadata.status_code}")
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ Failed to get metadata for {link}\nError: {metadata.error}\nCode : {metadata.status_code}"
+            )
+            return None
+
+    except Exception as e:
+        logger.error(f"Failed to add HTTP link {link}: {e}")
+        await bot.send_message(ADMIN_ID, f"❌ Failed to add HTTP link: {e}")
+        return None
+
+
 @bot.message_handler(content_types=['document', 'text'])
 @restricted
 async def handle_source(m: Message):
     logger.info(f"new message id: {m.message_id}")
     tmp_dir: Path | None = None
-
     added = []
+
     try:
         if m.content_type == 'document':
             # Handle .txt files
@@ -521,28 +591,16 @@ async def handle_source(m: Message):
                 text_content = content.decode('utf-8')
 
                 links = re.findall(r'magnet:\S+|https?://\S+', text_content)
-                
                 for link in links:
                     link = link.strip()
                     if link.startswith('magnet:'):
-                        try:
-                            added.append(aria2.add_magnet(link, options={"pause": "true"}))
-                            logger.info(f"Added magnet link from txt file: {link}")
-                        except Exception as e:
-                            logger.error(f"Failed to add magnet link {link}: {e}")
-                            await bot.send_message(ADMIN_ID, f"❌ Failed to add magnet link: {e}")
+                        res = await process_magnet_link(link)
+                        if res:
+                            added.append(res)
                     elif link.startswith('http://') or link.startswith('https://'):
-                        try:
-                            metadata = await get_file_metadata(link)
-                            if metadata['success']:
-                                added.append(aria2.add_uris([link], options={"pause": "true"}))
-                                logger.info(f"Added HTTP link from txt file: {link}")
-                            else:
-                                logger.error(f"Failed to get metadata for {link}: {metadata['error']}")
-                                await bot.send_message(ADMIN_ID, f"❌ Failed to get metadata for {link}: {metadata['error']}")
-                        except Exception as e:
-                            logger.error(f"Failed to add HTTP link {link}: {e}")
-                            await bot.send_message(ADMIN_ID, f"❌ Failed to add HTTP link: {e}")
+                        res = await process_http_link(link)
+                        if res:
+                            added.append(res)
 
             # Handle .zip files
             elif m.document.file_name.endswith('.zip'):
@@ -578,33 +636,22 @@ async def handle_source(m: Message):
 
         # Handle text messages
         elif m.text:
-            # Handle magnet links
             if m.text.startswith('magnet:'):
-                try:
-                    added.append(aria2.add_magnet(m.text, options={"pause": "true"}))
-                    logger.info(f"Added magnet link: {m.text}")
-                except Exception as e:
-                    logger.error(f"Failed to add magnet link: {e}")
-                    await bot.send_message(ADMIN_ID, f"❌ Failed to add magnet link: {e}")
-            
-            # Handle HTTP/HTTPS links
-            elif m.text.startswith('http://') or m.text.startswith('https://'):
-                try:
-                    metadata = await get_file_metadata(m.text)
-                    if metadata['success']:
-                        added.append(aria2.add_uris([m.text], options={"pause": "true"}))
-                        logger.info(f"Added HTTP link: {m.text}")
-                    else:
-                        logger.error(f"Failed to get metadata for {m.text}: {metadata['error']}")
-                        await bot.send_message(ADMIN_ID, f"❌ Failed to get metadata for {m.text}: {metadata['error']}")
-                except Exception as e:
-                    logger.error(f"Failed to add HTTP link: {e}")
-                    await bot.send_message(ADMIN_ID, f"❌ Failed to add HTTP link: {e}")
+                res = await process_magnet_link(m.text)
+                if res:
+                    added.append(res)
 
-        logger.info(f"Added {len(added)} new torrents")
+            elif m.text.startswith('http://') or m.text.startswith('https://'):
+                res = await process_http_link(m.text)
+                if res:
+                    added.append(res)
+
+        logger.info(f"Added {len(added)} new download processes")
+
         if added:
-            pending_torrents[ADMIN_ID] = [d.gid for d in added]
-            logger.info(f"pending torrents: {pending_torrents}")
+            pending_processes[ADMIN_ID] = [d[0].gid if isinstance(d, tuple) else d.gid for d in added]
+            logger.info(f"pending processes: {pending_processes}")
+
             messages = []
             message = "Found:\n"
             for i, d in enumerate(added):
@@ -613,23 +660,28 @@ async def handle_source(m: Message):
                     message = ""
                     await asyncio.sleep(0.05)
 
-                safe_name = html.escape(d.name)
-                message += f"📦 <b>{safe_name}</b> ({src.text.format_size(get_total_size(d))})\n"
+                if isinstance(d, tuple):
+                    download, file_metadata = d[0], d[1]
+                    safe_name = html.escape(download.name)
+                    message += f"📦 <b>{safe_name}</b> ({src.text.format_size(file_metadata.size)})\n"
+                else:
+                    safe_name = html.escape(d.name)
+                    message += f"📦 <b>{safe_name}</b> ({src.text.format_size(get_total_size(d))})\n"
 
             if len(message) > 0:
                 messages.append(message)
 
-            if len(message) > 0:
-                for index, msg in enumerate(messages):
-                    markup = None
-                    if index == len(messages) - 1:
-                        markup = InlineKeyboardMarkup()
-                        markup.row(
-                            InlineKeyboardButton("Add", callback_data=f"confirm_y", style="success"),
-                            InlineKeyboardButton("Cancel", callback_data=f"confirm_n", style="danger")
-                        )
-                    logger.debug(f"index: {index}, msg: {msg}")
-                    await bot.send_message(ADMIN_ID, message, reply_markup=markup, parse_mode="HTML")
+            for index, msg in enumerate(messages):
+                markup = None
+                if index == len(messages) - 1:
+                    markup = InlineKeyboardMarkup()
+                    markup.row(
+                        InlineKeyboardButton("Add", callback_data=f"confirm_y", style="success"),
+                        InlineKeyboardButton("Cancel", callback_data=f"confirm_n", style="danger")
+                    )
+                logger.debug(f"index: {index}, msg: {msg}")
+                await bot.send_message(ADMIN_ID, msg, reply_markup=markup, parse_mode="HTML")
+
     except Exception as e:
         logger.exception(f"an error occurred on handle_source: {e}")
         await bot.send_message(ADMIN_ID, f"❌ <b>Got error:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
@@ -641,8 +693,8 @@ async def handle_source(m: Message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_"))
 @restricted
 async def confirm_callback(call: CallbackQuery):
-    gids: list[str] = pending_torrents.pop(ADMIN_ID, [])
-    logger.debug(f"pending_torrents: {pending_torrents}")
+    gids: list[str] = pending_processes.pop(ADMIN_ID, [])
+    logger.debug(f"pending_torrents: {pending_processes}")
 
     if not gids:
         logger.info(f"no torrents currently pending")
