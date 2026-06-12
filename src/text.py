@@ -7,6 +7,50 @@ FILL = "█"
 EMPTY = "░"
 
 
+class MessageBuilder:
+    def __init__(self, max_length: int = 3450, separator: str = "\n"):
+        self.max_length = max_length
+        self.separator = separator
+        self.pages = []
+        self._current_page = []
+        self._current_length = 0
+
+    def add_chunk(self, chunk: str):
+        if not chunk:
+            return
+
+        chunk_len = len(chunk)
+        separator_len = len(self.separator) if self._current_page else 0
+
+        if self._current_length + separator_len + chunk_len > self.max_length:
+            if chunk_len > self.max_length:
+                self._flush_current_page()
+                self._split_and_add_huge_chunk(chunk)
+            else:
+                self._flush_current_page()
+                self._current_page.append(chunk)
+                self._current_length = chunk_len
+        else:
+            self._current_page.append(chunk)
+            self._current_length += separator_len + chunk_len
+
+    def _flush_current_page(self):
+        if self._current_page:
+            self.pages.append(self.separator.join(self._current_page))
+            self._current_page = []
+            self._current_length = 0
+
+    def _split_and_add_huge_chunk(self, huge_chunk: str):
+        for i in range(0, len(huge_chunk), self.max_length):
+            self.pages.append(huge_chunk[i:i + self.max_length])
+
+    def get_messages(self) -> list[str]:
+        self._flush_current_page()
+        result = self.pages.copy()
+        self.pages.clear()
+        return result
+
+
 def boolean_to_telegram_style(value: bool) -> str:
     return "success" if value else "danger"
 

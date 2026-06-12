@@ -25,7 +25,7 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.DEBUG)
 console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] | %(message)s"))
 
-logger = logging.getLogger("_trrntbot")
+logger = logging.getLogger("TelemetryLogu")
 logger.propagate = False
 logger.handlers.clear()
 logger.setLevel(logging.INFO)
