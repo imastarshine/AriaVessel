@@ -106,6 +106,59 @@ async def set_int_config_item(m: Message) -> None:
         logger.error(f"error while handling set int config state step: {e}", exc_info=e)
 
 
+async def set_str_config_item(m: Message) -> None:
+    try:
+        logger.info(f"[set_str_config]: received a message from: {m.from_user.id}")
+        user_message = m.text
+
+        if user_message == "/cancel":
+            return
+
+        async with src.bot.bot.retrieve_data(m.from_user.id, m.chat.id) as data:
+            setting_key = data.get('setting_key')
+            helper_msg_id = data.get('helper_message_id')
+            original_markup_message_id = data.get('original_markup_message_id')
+
+        logger.info(
+            f"[set_str_config]: settings_key: {setting_key} | helper_msg_id: {helper_msg_id} "
+            f"| orig_msmg_id: {original_markup_message_id}"
+        )
+
+        if not user_message.strip():
+            await src.bot.bot.delete_message(chat_id=m.chat.id, message_id=m.message_id)
+            try:
+                await src.bot.bot.delete_message(chat_id=m.chat.id, message_id=helper_msg_id)
+            except telebot.asyncio_helper.ApiTelegramException:
+                pass
+            await src.bot.bot.send_message(
+                chat_id=m.chat.id,
+                text="❌ <b>The value must not be empty. Try again.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        setattr(src.configs.config, setting_key, user_message.strip())
+        src.configs.config.save()
+
+        new_value = getattr(src.configs.config, setting_key)
+        await src.bot.bot.send_message(
+            chat_id=m.chat.id,
+            text=f"Setting <code>{setting_key}</code> has been updated to <code>{new_value}</code>",
+            parse_mode="HTML"
+        )
+        await src.bot.bot.delete_message(chat_id=m.chat.id, message_id=helper_msg_id)
+        await src.bot.bot.delete_message(chat_id=m.chat.id, message_id=m.message_id)
+
+        await src.bot.bot.edit_message_reply_markup(
+            chat_id=m.chat.id,
+            message_id=original_markup_message_id,
+            reply_markup=generate_settings_keyboard_markup()
+        )
+        await src.bot.bot.delete_state(m.from_user.id, m.chat.id)
+    except Exception as e:
+        logger.error(f"error while handling set str config state step: {e}", exc_info=e)
+
+
 async def process_settings_callback(call: CallbackQuery):
     setting = call.data.removeprefix("e:")
     value = getattr(src.configs.config, setting)
@@ -136,6 +189,26 @@ async def process_settings_callback(call: CallbackQuery):
                 data['original_markup_message_id'] = call.message.message_id
         except Exception as e:
             logger.exception(f"an error occurred on set int value for setting: {setting}", exc_info=e)
+    elif isinstance(value, str):
+        message = await src.bot.bot.send_message(
+            chat_id=call.from_user.id,
+            text=f"Enter a new value for <code>{setting}</code>\n"
+                 f"Current: <code>{value}</code>\n"
+                 f"↩️ Send <code>/cancel</code> to cancel this action",
+            parse_mode="HTML"
+        )
+        try:
+            await src.bot.bot.set_state(
+                call.from_user.id,
+                src.bot.states.UserSteps.waiting_for_setting_str_value,
+                call.message.chat.id
+            )
+            async with src.bot.bot.retrieve_data(call.from_user.id, call.message.chat.id) as data:
+                data['setting_key'] = setting
+                data['helper_message_id'] = message.message_id
+                data['original_markup_message_id'] = call.message.message_id
+        except Exception as e:
+            logger.exception(f"an error occurred on set str value for setting: {setting}", exc_info=e)
     else:
         # TODO: Make it better
         await src.bot.bot.answer_callback_query(call.id, text="Cannot change this")

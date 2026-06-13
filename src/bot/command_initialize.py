@@ -1,5 +1,6 @@
 import src.bot
 import src.bot.actions
+import src.bot.after
 import src.bot.informant
 import src.bot.receiver
 import src.bot.security
@@ -31,6 +32,12 @@ def initialize():
         commands=['pause', 'resume', 'rm', 'del']
     )
 
+    # after.py
+    src.bot.bot.register_message_handler(
+        src.bot.security.restricted(src.bot.after.after_command),
+        commands=['after']
+    )
+
     # settings.py
     src.bot.bot.register_message_handler(
         src.bot.security.restricted(src.bot.settings.settings_command),
@@ -40,6 +47,11 @@ def initialize():
     src.bot.bot.register_message_handler(
         src.bot.settings.set_int_config_item,
         state=src.bot.states.UserSteps.waiting_for_setting_int_value
+    )
+
+    src.bot.bot.register_message_handler(
+        src.bot.settings.set_str_config_item,
+        state=src.bot.states.UserSteps.waiting_for_setting_str_value
     )
 
     src.bot.bot.register_callback_query_handler(

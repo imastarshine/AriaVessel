@@ -8,7 +8,8 @@ PRETTY_NAMES = {
     "uri_filename_rename": "Rename file",
     "uri_filename_translit": "Transliterate",
     "uri_filename_slugify": "Slugify",
-    "uri_filename_max_length": "Max length"
+    "uri_filename_max_length": "Max length",
+    "uri_files_after_delay": "After queue delay (sec)"
 }
 
 
@@ -23,6 +24,7 @@ class Config:
         self.uri_filename_slugify: bool = False
 
         self.uri_filename_max_length: int = -1
+        self.after_delay: str = "2,10"
 
     def __setattr__(self, key: str, value: Any):
         if key == "uri_filename_max_length" and isinstance(value, int):

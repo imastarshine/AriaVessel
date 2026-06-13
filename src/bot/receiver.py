@@ -8,6 +8,7 @@ from slugify import slugify
 from telebot.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import src.aria2.statistics
+import src.bot.after
 import src.http_client
 import src.bot.shared
 import src.configs
@@ -80,6 +81,64 @@ async def process_http_link(link: str):
         return None
 
 
+def extract_link_from_after_line(line: str) -> str | None:
+    parts = line.strip().split(maxsplit=2)
+    if len(parts) < 2:
+        return None
+    link = parts[-1]
+    if link.startswith(("http://", "https://")):
+        return link
+    return None
+
+
+async def process_after_file(lines: list[str], m: Message) -> list:
+    downloads = aria2.get_downloads()
+    added = []
+    gids = []
+    delay = src.bot.after.parse_after_delay(src.configs.config.after_delay)
+
+    for line in lines:
+        link = extract_link_from_after_line(line)
+        if not link:
+            continue
+        await asyncio.sleep(delay)
+        result = aria2.add_uris([link], options={"pause": "true"})
+        gid = result.gid
+        gids.append(gid)
+        added.append(result)
+        logger.info(f"after_file: added '{link}' (paused), gid={gid}")
+
+    if not gids:
+        return added
+
+    parent_gid: str | None = downloads[-1].gid if downloads else None
+    first_gid = gids[0]
+
+    for child_gid in gids:
+        if parent_gid:
+            if parent_gid not in src.bot.shared.resume_queue:
+                src.bot.shared.resume_queue[parent_gid] = []
+            src.bot.shared.resume_queue[parent_gid].append(child_gid)
+            logger.info(f"after_file: chained resume {child_gid} after {parent_gid}")
+        parent_gid = child_gid
+
+    if not downloads:
+        aria2.resume([aria2.get_downloads([first_gid])[0]])
+
+    safe_names = []
+    for d in added:
+        safe_names.append(html.escape(d.name or "unknown"))
+    summary = "📋 <b>After chain added:</b>\n"
+    for i, (sn, gid) in enumerate(zip(safe_names, gids)):
+        status = "▶️ Started" if i == 0 and not downloads else "⏸ Paused"
+        summary += f"{i+1}. 📦 <b>{sn}</b> (<code>{gid}</code>) {status}\n"
+    if downloads:
+        summary += f"\n⏳ First download will start after <code>{downloads[-1].gid}</code> completes"
+    await bot.send_message(src.shared.ADMIN_ID, summary, parse_mode="HTML")
+
+    return added
+
+
 async def handle_source(m: Message):
     logger.info(f"new message id: {m.message_id}")
     tmp_dir: Path | None = None
@@ -92,6 +151,13 @@ async def handle_source(m: Message):
                 info = await bot.get_file(m.document.file_id)
                 content = await bot.download_file(info.file_path)
                 text_content = content.decode('utf-8')
+
+                lines = text_content.strip().splitlines()
+                after_lines = [ln for ln in lines if ln.strip().startswith("/after")]
+
+                if after_lines and all(ln.strip().startswith("/after") for ln in lines if ln.strip()):
+                    added = await process_after_file(lines, m)
+                    return
 
                 links = re.findall(r'magnet:\S+|https?://\S+', text_content)
                 for link in links:
