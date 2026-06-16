@@ -5,6 +5,9 @@ import html
 
 from aria2p import Download
 
+AFTER_NONE = src.bot.shared.AFTER_NONE
+
+
 def get_total_size(download: Download):
     return sum(f.length for f in download.files)
 
@@ -12,7 +15,7 @@ def get_total_size(download: Download):
 def get_status() -> list[str]:
     downloads = aria2.get_downloads()
 
-    if len(downloads) <= 0 and not src.bot.shared.after_queue and not src.bot.shared.resume_queue:
+    if not downloads and not src.bot.shared.after_queue:
         return ["🤷 There are no torrents currently"]
 
     message_builder = src.text.MessageBuilder()
@@ -20,7 +23,7 @@ def get_status() -> list[str]:
     for i, d in enumerate(downloads):
         total = sum(f.length for f in d.files)
         size_str = src.text.format_size(total) if total > 0 else "unknown size"
-        speed_str = src.text.format_speed(d.download_speed) + f" (eta: {d.eta_string(2)})" if d.download_speed else ""
+        speed_str = src.text.format_speed(d.download_speed) + f" (eta: {d.eta_string(2)})" if d.download_speed else "0 B/s"
 
         safe_name = html.escape(d.name or f"Unknown (g:{d.gid})")
 
@@ -40,20 +43,10 @@ def get_status() -> list[str]:
 
         after_info = ""
         if d.gid in src.bot.shared.after_queue:
-            links = src.bot.shared.after_queue[d.gid]
-            after_info = "\n⏳ <b>After:</b>\n"
-            for link in links:
-                truncated = link[:128] if len(link) > 128 else link
+            after_info = "\n\n⏳ <b>After:</b>\n"
+            for task in src.bot.shared.after_queue[d.gid]:
+                truncated = task["link"][:128] if len(task["link"]) > 128 else task["link"]
                 after_info += f"  📎 {html.escape(truncated)}\n"
-        if d.gid in src.bot.shared.resume_queue:
-            child_gids = src.bot.shared.resume_queue[d.gid]
-            child_info = "\n⏳ <b>After (chain):</b>\n"
-            dl_map = {dl.gid: dl for dl in downloads}
-            for cgid in child_gids:
-                cd = dl_map.get(cgid)
-                name = html.escape(cd.name) if cd else cgid[:16]
-                child_info += f"  ▶️ {name} (<code>{cgid}</code>)\n"
-            after_info += child_info
 
         message_builder.add_chunk(
             f"🆔 <code>{i}</code> | <b>GID</b> <code>{d.gid}</code> | 📎 <b>{safe_name}</b>\n"
@@ -61,5 +54,14 @@ def get_status() -> list[str]:
             f"🏷️ {status_icon} {status_desc}"
             f"{after_info}\n\n"
         )
+
+    # Show queued items with no parent
+    none_tasks = src.bot.shared.after_queue.get(AFTER_NONE)
+    if none_tasks:
+        msg = "\n⏳ <b>Queued (immediate):</b>\n"
+        for task in none_tasks:
+            truncated = task["link"][:128] if len(task["link"]) > 128 else task["link"]
+            msg += f"  📎 {html.escape(truncated)}\n"
+        message_builder.add_chunk(msg)
 
     return message_builder.get_messages()

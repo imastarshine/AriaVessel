@@ -1,5 +1,6 @@
 import asyncio
 import html
+import random
 import re
 import shutil
 import zipfile
@@ -8,7 +9,6 @@ from slugify import slugify
 from telebot.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import src.aria2.statistics
-import src.bot.after
 import src.http_client
 import src.bot.shared
 import src.configs
@@ -91,52 +91,161 @@ def extract_link_from_after_line(line: str) -> str | None:
     return None
 
 
+def _next_task_id() -> str:
+    src.bot.shared.after_counter = getattr(src.bot.shared, "after_counter", 0) + 1
+    return f"__task_{src.bot.shared.after_counter}__"
+
+
+def _find_after_parent(downloads: list, parts: list[str]) -> str | None:
+    if len(parts) == 2:
+        if not downloads:
+            if src.bot.shared.after_queue.get(src.bot.shared.AFTER_NONE):
+                last_tasks = src.bot.shared.after_queue[src.bot.shared.AFTER_NONE]
+                return last_tasks[-1]["task_id"]
+            return src.bot.shared.AFTER_NONE
+        return downloads[-1].gid
+
+    arg1 = parts[1]
+    if len(arg1) == 16 and all(c in "0123456789abcdef" for c in arg1):
+        return arg1
+    try:
+        dl_list, _ = src.text.parse_idx(arg1, downloads)
+        if dl_list:
+            return dl_list[0].gid
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def parse_after_delay(raw: str = "") -> float:
+    if not raw:
+        raw = src.configs.config.after_delay
+    if "," in raw:
+        parts = [x.strip() for x in raw.split(",", 1)]
+        try:
+            a, b = float(parts[0]), float(parts[1])
+        except (ValueError, IndexError):
+            return 2.0
+        if a < 0.25:
+            a = 0.25
+        if b < 0.25:
+            b = 0.25
+        if a > b:
+            a, b = b, a
+        return random.uniform(a, b)
+    else:
+        try:
+            v = float(raw)
+        except ValueError:
+            return 2.0
+        return max(v, 0.25)
+
+
+async def after_command(m: Message):
+    try:
+        parts = m.text.split(maxsplit=2)
+        if len(parts) < 2:
+            await bot.reply_to(m, "❌ Usage: /after <http-link> or /after <idx> <http-link> or /after <gid> <http-link>", parse_mode="HTML")
+            return
+
+        link = parts[-1]
+        if not link.startswith(("http://", "https://")):
+            await bot.reply_to(m, "❌ The link must be http:// or https://", parse_mode="HTML")
+            return
+
+        downloads = aria2.get_downloads()
+        parent = _find_after_parent(downloads, parts)
+
+        if parent is None:
+            await bot.reply_to(m, "❌ Invalid ID or GID specified", parse_mode="HTML")
+            return
+
+        task_id = _next_task_id()
+        if parent not in src.bot.shared.after_queue:
+            src.bot.shared.after_queue[parent] = []
+        src.bot.shared.after_queue[parent].append({"link": link, "task_id": task_id, "retries": 0})
+
+        if parent == src.bot.shared.AFTER_NONE:
+            msg = "⏳ Queued – will start shortly"
+        else:
+            parent_label = parent[:16]
+            msg = f"⏳ Queued – will start after <code>{parent_label}</code>"
+
+        await bot.reply_to(m, f"{msg}:\n{html.escape(link[:128])}", parse_mode="HTML")
+        logger.info(f"after: queued {task_id} -> parent={parent} link={link}")
+    except Exception as e:
+        logger.exception(f"after command error: {e}")
+        await bot.reply_to(m, f"❌ <b>Error:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
+
+
 async def process_after_file(lines: list[str], m: Message) -> list:
     downloads = aria2.get_downloads()
-    added = []
-    gids = []
-    delay = src.bot.after.parse_after_delay(src.configs.config.after_delay)
+    parent: str = src.bot.shared.AFTER_NONE
+    if downloads:
+        parent = downloads[-1].gid
 
+    queued = []
     for line in lines:
         link = extract_link_from_after_line(line)
         if not link:
             continue
-        await asyncio.sleep(delay)
-        result = aria2.add_uris([link], options={"pause": "true"})
-        gid = result.gid
-        gids.append(gid)
-        added.append(result)
-        logger.info(f"after_file: added '{link}' (paused), gid={gid}")
+        task_id = _next_task_id()
+        entry = {"link": link, "task_id": task_id, "retries": 0}
+        if parent not in src.bot.shared.after_queue:
+            src.bot.shared.after_queue[parent] = []
+        src.bot.shared.after_queue[parent].append(entry)
+        queued.append(entry)
+        parent = task_id
+        logger.info(f"after_file: queued {task_id} link={link}")
 
-    if not gids:
-        return added
-
-    parent_gid: str | None = downloads[-1].gid if downloads else None
-    first_gid = gids[0]
-
-    for child_gid in gids:
-        if parent_gid:
-            if parent_gid not in src.bot.shared.resume_queue:
-                src.bot.shared.resume_queue[parent_gid] = []
-            src.bot.shared.resume_queue[parent_gid].append(child_gid)
-            logger.info(f"after_file: chained resume {child_gid} after {parent_gid}")
-        parent_gid = child_gid
-
-    if not downloads:
-        aria2.resume([aria2.get_downloads([first_gid])[0]])
-
-    safe_names = []
-    for d in added:
-        safe_names.append(html.escape(d.name or "unknown"))
-    summary = "📋 <b>After chain added:</b>\n"
-    for i, (sn, gid) in enumerate(zip(safe_names, gids)):
-        status = "▶️ Started" if i == 0 and not downloads else "⏸ Paused"
-        summary += f"{i+1}. 📦 <b>{sn}</b> (<code>{gid}</code>) {status}\n"
+    summary = "📋 <b>After chain queued:</b>\n"
+    for i, entry in enumerate(queued):
+        summary += f"{i+1}. 📎 {html.escape(entry['link'][:80])} (<code>{entry['task_id']}</code>)\n"
     if downloads:
-        summary += f"\n⏳ First download will start after <code>{downloads[-1].gid}</code> completes"
+        summary += f"\n⏳ First download will start after <code>{downloads[-1].gid}</code>"
     await bot.send_message(src.shared.ADMIN_ID, summary, parse_mode="HTML")
+    return queued
 
-    return added
+
+async def process_after_task(task: dict) -> None:
+    link = task["link"]
+    task_id = task["task_id"]
+
+    for attempt in range(3):
+        delay = src.bot.after.parse_after_delay()
+        await asyncio.sleep(delay)
+
+        metadata = await src.http_client.get_file_metadata(link)
+        if metadata.success:
+            options = get_uri_options(metadata)
+            result = aria2.add_uris([link], options=options)
+            gid = result.gid
+            src.bot.shared.after_gid_map[task_id] = gid
+            aria2.resume([result])
+            safe_name = html.escape(result.name or link)
+            await bot.send_message(
+                src.shared.ADMIN_ID,
+                f"▶️ <b>After download started:</b>\n📦 <b>{safe_name}</b> (<code>{gid}</code>)",
+                parse_mode="HTML"
+            )
+            logger.info(f"after task {task_id} added: {link}, gid={gid}")
+            return
+
+        logger.warning(f"after task {task_id} HEAD attempt {attempt+1}/3 failed: {link}")
+        if attempt < 2:
+            await bot.send_message(
+                src.shared.ADMIN_ID,
+                f"⚠️ <b>After HEAD failed</b> (retry {attempt+1}/3):\n{html.escape(link[:128])}",
+                parse_mode="HTML"
+            )
+            await asyncio.sleep(60)
+
+    await bot.send_message(
+        src.shared.ADMIN_ID,
+        f"❌ <b>After task failed</b> (3 attempts):\n{html.escape(link[:128])}",
+        parse_mode="HTML"
+    )
+    logger.error(f"after task {task_id} failed after 3 attempts: {link}")
 
 
 async def handle_source(m: Message):

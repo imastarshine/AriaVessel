@@ -1,12 +1,12 @@
 import asyncio
+import html
 
 import src.text
-import html
 import src.configs
-import src.bot.after
 import src.bot.shared
 import src.bot.upload
 import src.bot.command_initialize
+import src.bot.receiver
 
 from src.logger import logger, cleanup_old_logs
 from src.shared import ADMIN_ID
@@ -15,7 +15,24 @@ from src.aria2 import aria2
 from src.aria2.statistics import get_total_size
 from src.bot import bot
 
-# ------------------------ #
+AFTER_NONE = src.bot.shared.AFTER_NONE
+
+
+def _is_finished(gid: str) -> bool:
+    try:
+        dls = aria2.get_downloads([gid])
+        if not dls:
+            return True
+        dl = dls[0]
+        total = get_total_size(dl)
+        if dl.status in ("complete", "error", "removed"):
+            return True
+        if 0 < total == dl.completed_length:
+            return True
+        return False
+    except Exception:
+        return True
+
 
 async def monitor():
     known = {d.gid for d in aria2.get_downloads() if d.completed_length == get_total_size(d) and get_total_size(d) > 0}
@@ -29,8 +46,7 @@ async def monitor():
 
         try:
             dls = aria2.get_downloads()
-            completed_gids = []
-            for i, d in enumerate(dls):
+            for d in dls:
                 total = get_total_size(d)
                 if 0 < total == d.completed_length and d.gid not in known:
                     logger.info(f"new download completed: {d.name} ({d.gid}), size: {src.text.format_size(total)}")
@@ -40,29 +56,14 @@ async def monitor():
                         message_parts.append(message)
                         message = ""
                     known.add(d.gid)
-                    completed_gids.append(d.gid)
 
                 elif d.status == "error" and d.gid not in known:
                     known.add(d.gid)
-                    completed_gids.append(d.gid)
-
-            for cgid in completed_gids:
-                await process_after_completion(cgid)
-
-            current_gids = {d.gid for d in dls}
-            for parent_gid in list(src.bot.shared.resume_queue.keys()):
-                if parent_gid not in current_gids and parent_gid not in known_removed:
-                    known_removed.add(parent_gid)
-                    await process_after_completion(parent_gid)
-            for parent_gid in list(src.bot.shared.after_queue.keys()):
-                if parent_gid not in current_gids and parent_gid not in known_removed:
-                    known_removed.add(parent_gid)
-                    await process_after_completion(parent_gid)
         except Exception as e:
             logger.exception(f"an error occurred on monitor: {e}")
             continue
 
-        if len(message) > 0:
+        if message:
             message_parts.append(message)
 
         try:
@@ -74,59 +75,54 @@ async def monitor():
             logger.exception(f"an error occurred on message send in monitor: {e}")
 
 
-async def process_after_completion(completed_gid: str):
-    await process_after_queue(completed_gid)
-    await process_resume_queue(completed_gid)
+async def after_worker():
+    known_removed = set()
+    while True:
+        await asyncio.sleep(10)
 
-
-async def process_after_queue(completed_gid: str):
-    links = src.bot.shared.after_queue.pop(completed_gid, None)
-    if not links:
-        return
-
-    for link in links:
-        delay = src.bot.after.parse_after_delay(src.configs.config.after_delay)
-        await asyncio.sleep(delay)
-        result = aria2.add_uris([link], options={"pause": "true"})
-        gid = result.gid
-        aria2.resume([result])
-        safe_name = html.escape(result.name or link)
-        await bot.send_message(
-            ADMIN_ID,
-            f"▶️ <b>After queue started:</b>\n📦 <b>{safe_name}</b> (<code>{gid}</code>)",
-            parse_mode="HTML"
-        )
-        logger.info(f"after_queue: started download {gid} for link {link}")
-
-
-async def process_resume_queue(completed_gid: str):
-    child_gids = src.bot.shared.resume_queue.pop(completed_gid, None)
-    if not child_gids:
-        return
-
-    for child_gid in child_gids:
-        delay = src.bot.after.parse_after_delay(src.configs.config.after_delay)
-        await asyncio.sleep(delay)
         try:
-            dls = aria2.get_downloads([child_gid])
-            if dls:
-                aria2.resume(dls)
-                safe_name = html.escape(dls[0].name or "unknown")
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"▶️ <b>After chain resumed:</b>\n📦 <b>{safe_name}</b> (<code>{child_gid}</code>)",
-                    parse_mode="HTML"
-                )
-                logger.info(f"resume_queue: resumed {child_gid} after {completed_gid}")
+            ready: list[tuple[str, dict]] = []
+            for parent_key in list(src.bot.shared.after_queue.keys()):
+                tasks = src.bot.shared.after_queue[parent_key]
+                if not tasks:
+                    del src.bot.shared.after_queue[parent_key]
+                    continue
+
+                if parent_key == AFTER_NONE:
+                    ready.append((parent_key, tasks[0]))
+                    continue
+
+                gid: str | None = None
+                if parent_key.startswith("__task_"):
+                    gid = src.bot.shared.after_gid_map.get(parent_key)
+                    if gid is None:
+                        continue
+                else:
+                    gid = parent_key
+
+                if gid in known_removed:
+                    ready.append((parent_key, tasks[0]))
+                elif _is_finished(gid):
+                    ready.append((parent_key, tasks[0]))
+                    known_removed.add(gid)
+
+            for parent_key, task in ready:
+                queue = src.bot.shared.after_queue.get(parent_key)
+                if queue and queue[0].get("task_id") == task["task_id"]:
+                    queue.pop(0)
+                if not queue or not src.bot.shared.after_queue.get(parent_key):
+                    src.bot.shared.after_queue.pop(parent_key, None)
+
+                await src.bot.receiver.process_after_task(task)
+
         except Exception as e:
-            logger.error(f"resume_queue: failed to resume {child_gid}: {e}")
+            logger.exception(f"after_worker error: {e}")
 
 
 async def main():
     logger.info("cleaning old log files")
     cleanup_old_logs(days=14)
     logger.info("starting main bot")
-    # TODO: Remo disk check on main(), and add bot log for this
 
     try:
         await src.bot.upload.disk.init()
@@ -143,7 +139,8 @@ async def main():
 
     src.bot.command_initialize.initialize()
     asyncio.create_task(monitor())
-    logger.info("monitoring task started")
+    asyncio.create_task(after_worker())
+    logger.info("monitoring and after_worker tasks started")
     await bot.infinity_polling()
 
 

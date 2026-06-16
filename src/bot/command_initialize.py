@@ -1,6 +1,5 @@
 import src.bot
 import src.bot.actions
-import src.bot.after
 import src.bot.informant
 import src.bot.receiver
 import src.bot.security
@@ -30,12 +29,6 @@ def initialize():
     src.bot.bot.register_message_handler(
         src.bot.security.restricted(src.bot.actions.control_command),
         commands=['pause', 'resume', 'rm', 'del']
-    )
-
-    # after.py
-    src.bot.bot.register_message_handler(
-        src.bot.security.restricted(src.bot.after.after_command),
-        commands=['after']
     )
 
     # settings.py
@@ -84,4 +77,9 @@ def initialize():
     src.bot.bot.register_callback_query_handler(
         src.bot.security.restricted(src.bot.receiver.confirm_callback),
         func=lambda call: call.data.startswith("confirm_")
+    )
+
+    src.bot.bot.register_message_handler(
+        src.bot.security.restricted(src.bot.receiver.after_command),
+        commands=['after']
     )
