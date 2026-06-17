@@ -70,6 +70,11 @@ def initialize():
 
     # receiver.py
     src.bot.bot.register_message_handler(
+        src.bot.security.restricted(src.bot.receiver.after_command),
+        commands=['after']
+    )
+
+    src.bot.bot.register_message_handler(
         src.bot.security.restricted(src.bot.receiver.handle_source),
         content_types=["document", "text"]
     )
@@ -77,9 +82,4 @@ def initialize():
     src.bot.bot.register_callback_query_handler(
         src.bot.security.restricted(src.bot.receiver.confirm_callback),
         func=lambda call: call.data.startswith("confirm_")
-    )
-
-    src.bot.bot.register_message_handler(
-        src.bot.security.restricted(src.bot.receiver.after_command),
-        commands=['after']
     )

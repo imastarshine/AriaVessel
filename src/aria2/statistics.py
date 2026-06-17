@@ -12,10 +12,39 @@ def get_total_size(download: Download):
     return sum(f.length for f in download.files)
 
 
+def _resolve_parent_label(parent_key: str) -> str | None:
+    if parent_key == AFTER_NONE:
+        return None
+    if parent_key.startswith("__task_"):
+        gid = src.bot.shared.after_gid_map.get(parent_key)
+        if gid:
+            return gid
+        return None
+    return parent_key
+
+
+def _build_after_block() -> str:
+    block = ""
+    for parent_key, tasks in src.bot.shared.after_queue.items():
+        parent_label = _resolve_parent_label(parent_key)
+        for task in tasks:
+            truncated = task["link"][:128] if len(task["link"]) > 128 else task["link"]
+            line = f"  📎 {html.escape(truncated)}"
+            if parent_label:
+                line += f" → after <code>{parent_label}</code>"
+            block += line + "\n"
+
+    for batch in src.bot.shared.after_batch:
+        truncated = batch["link"][:128] if len(batch["link"]) > 128 else batch["link"]
+        block += f"  📎 {html.escape(truncated)} → after <b>{len(batch['parents'])}</b> download(s)\n"
+
+    return block
+
+
 def get_status() -> list[str]:
     downloads = aria2.get_downloads()
 
-    if not downloads and not src.bot.shared.after_queue:
+    if not downloads and not src.bot.shared.after_queue and not src.bot.shared.after_batch:
         return ["🤷 There are no torrents currently"]
 
     message_builder = src.text.MessageBuilder()
@@ -41,27 +70,15 @@ def get_status() -> list[str]:
         progress_percent = d.progress / 100 if d.progress else 0.0
         bar = "📥 " + src.text.generate_progress_bar(progress_percent, 10) + " | "
 
-        after_info = ""
-        if d.gid in src.bot.shared.after_queue:
-            after_info = "\n\n⏳ <b>After:</b>\n"
-            for task in src.bot.shared.after_queue[d.gid]:
-                truncated = task["link"][:128] if len(task["link"]) > 128 else task["link"]
-                after_info += f"  📎 {html.escape(truncated)}\n"
-
         message_builder.add_chunk(
             f"🆔 <code>{i}</code> | <b>GID</b> <code>{d.gid}</code> | 📎 <b>{safe_name}</b>\n"
             f"{bar if status_icon == '🚀' else ''}📁 {size_str}\n"
-            f"🏷️ {status_icon} {status_desc}"
-            f"{after_info}\n\n"
+            f"🏷️ {status_icon} {status_desc}\n\n"
         )
 
-    # Show queued items with no parent
-    none_tasks = src.bot.shared.after_queue.get(AFTER_NONE)
-    if none_tasks:
-        msg = "\n⏳ <b>Queued (immediate):</b>\n"
-        for task in none_tasks:
-            truncated = task["link"][:128] if len(task["link"]) > 128 else task["link"]
-            msg += f"  📎 {html.escape(truncated)}\n"
-        message_builder.add_chunk(msg)
+    # After queue info at the bottom
+    after_block = _build_after_block()
+    if after_block:
+        message_builder.add_chunk("⏳ <b>After queue:</b>\n" + after_block)
 
     return message_builder.get_messages()

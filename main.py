@@ -81,39 +81,46 @@ async def after_worker():
         await asyncio.sleep(10)
 
         try:
-            ready: list[tuple[str, dict]] = []
+            # --- single-parent queue ---
             for parent_key in list(src.bot.shared.after_queue.keys()):
+                if parent_key not in src.bot.shared.after_queue:
+                    continue
                 tasks = src.bot.shared.after_queue[parent_key]
                 if not tasks:
                     del src.bot.shared.after_queue[parent_key]
                     continue
 
-                if parent_key == AFTER_NONE:
-                    ready.append((parent_key, tasks[0]))
-                    continue
-
+                ready = False
                 gid: str | None = None
-                if parent_key.startswith("__task_"):
+
+                if parent_key == AFTER_NONE:
+                    ready = True
+                elif parent_key.startswith("__task_"):
                     gid = src.bot.shared.after_gid_map.get(parent_key)
                     if gid is None:
                         continue
                 else:
                     gid = parent_key
 
-                if gid in known_removed:
-                    ready.append((parent_key, tasks[0]))
-                elif _is_finished(gid):
-                    ready.append((parent_key, tasks[0]))
-                    known_removed.add(gid)
+                if not ready and gid:
+                    if gid in known_removed or _is_finished(gid):
+                        ready = True
+                        known_removed.add(gid)
 
-            for parent_key, task in ready:
-                queue = src.bot.shared.after_queue.get(parent_key)
-                if queue and queue[0].get("task_id") == task["task_id"]:
-                    queue.pop(0)
-                if not queue or not src.bot.shared.after_queue.get(parent_key):
-                    src.bot.shared.after_queue.pop(parent_key, None)
+                if ready:
+                    all_tasks = src.bot.shared.after_queue.pop(parent_key, [])
+                    for task in all_tasks:
+                        await src.bot.receiver.process_after_task(task)
 
-                await src.bot.receiver.process_after_task(task)
+            # --- batch queue (all parents must finish) ---
+            still_pending: list[dict] = []
+            for batch in src.bot.shared.after_batch:
+                parents_left = [g for g in batch["parents"] if g not in known_removed and not _is_finished(g)]
+                if not parents_left:
+                    await src.bot.receiver.process_after_task(batch)
+                else:
+                    still_pending.append(batch)
+            src.bot.shared.after_batch = still_pending
 
         except Exception as e:
             logger.exception(f"after_worker error: {e}")

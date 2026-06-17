@@ -93,23 +93,26 @@ def extract_link_from_after_line(line: str) -> str | None:
 
 def _next_task_id() -> str:
     src.bot.shared.after_counter = getattr(src.bot.shared, "after_counter", 0) + 1
-    return f"__task_{src.bot.shared.after_counter}__"
+    task_id = f"__task_{src.bot.shared.after_counter}__"
+    src.bot.shared.after_last_task_id = task_id
+    return task_id
 
 
-def _find_after_parent(downloads: list, parts: list[str]) -> str | None:
-    if len(parts) == 2:
-        if not downloads:
-            if src.bot.shared.after_queue.get(src.bot.shared.AFTER_NONE):
-                last_tasks = src.bot.shared.after_queue[src.bot.shared.AFTER_NONE]
-                return last_tasks[-1]["task_id"]
-            return src.bot.shared.AFTER_NONE
-        return downloads[-1].gid
+def _dl_finished(dl) -> bool:
+    from src.aria2.statistics import get_total_size
+    total = get_total_size(dl)
+    if dl.status in ("complete", "error", "removed"):
+        return True
+    if 0 < total == dl.completed_length:
+        return True
+    return False
 
-    arg1 = parts[1]
-    if len(arg1) == 16 and all(c in "0123456789abcdef" for c in arg1):
-        return arg1
+
+def _find_single_parent(downloads: list, arg: str) -> str | None:
+    if len(arg) == 16 and all(c in "0123456789abcdef" for c in arg):
+        return arg
     try:
-        dl_list, _ = src.text.parse_idx(arg1, downloads)
+        dl_list, _ = src.text.parse_idx(arg, downloads)
         if dl_list:
             return dl_list[0].gid
     except (ValueError, IndexError):
@@ -153,26 +156,40 @@ async def after_command(m: Message):
             await bot.reply_to(m, "❌ The link must be http:// or https://", parse_mode="HTML")
             return
 
-        downloads = aria2.get_downloads()
-        parent = _find_after_parent(downloads, parts)
-
-        if parent is None:
-            await bot.reply_to(m, "❌ Invalid ID or GID specified", parse_mode="HTML")
-            return
-
+        # save previous task BEFORE _next_task_id overwrites after_last_task_id
+        last = src.bot.shared.after_last_task_id
         task_id = _next_task_id()
-        if parent not in src.bot.shared.after_queue:
-            src.bot.shared.after_queue[parent] = []
-        src.bot.shared.after_queue[parent].append({"link": link, "task_id": task_id, "retries": 0})
+        entry = {"link": link, "task_id": task_id, "retries": 0}
+        downloads = aria2.get_downloads()
+        msg = ""
 
-        if parent == src.bot.shared.AFTER_NONE:
-            msg = "⏳ Queued – will start shortly"
+        if len(parts) == 2:
+            # /after <link>  ->  wait for ALL current downloads (or chain)
+            active = [d for d in downloads if not _dl_finished(d)]
+            if not active:
+                if last:
+                    src.bot.shared.after_queue.setdefault(last, []).append(entry)
+                    msg = f"⏳ Queued – will start after previous task"
+                else:
+                    # nothing to wait for — start immediately
+                    asyncio.create_task(_run_after_directly(m, entry))
+                    msg = "▶️ Starting now"
+            else:
+                parents = [d.gid for d in active]
+                src.bot.shared.after_batch.append({"parents": parents, **entry})
+                msg = f"⏳ Queued – will start after <b>{len(parents)}</b> download(s) complete"
+
         else:
-            parent_label = parent[:16]
-            msg = f"⏳ Queued – will start after <code>{parent_label}</code>"
+            # /after <idx|gid> <link>
+            parent = _find_single_parent(downloads, parts[1])
+            if parent is None:
+                await bot.reply_to(m, "❌ Invalid ID or GID specified", parse_mode="HTML")
+                return
+            src.bot.shared.after_queue.setdefault(parent, []).append(entry)
+            msg = f"⏳ Queued – will start after <code>{parent[:16]}</code>"
 
         await bot.reply_to(m, f"{msg}:\n{html.escape(link[:128])}", parse_mode="HTML")
-        logger.info(f"after: queued {task_id} -> parent={parent} link={link}")
+        logger.info(f"after: queued {task_id} link={link}")
     except Exception as e:
         logger.exception(f"after command error: {e}")
         await bot.reply_to(m, f"❌ <b>Error:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
@@ -180,31 +197,57 @@ async def after_command(m: Message):
 
 async def process_after_file(lines: list[str], m: Message) -> list:
     downloads = aria2.get_downloads()
-    parent: str = src.bot.shared.AFTER_NONE
-    if downloads:
-        parent = downloads[-1].gid
-
+    active = [d for d in downloads if not _dl_finished(d)]
     queued = []
+    prev_key: str | None = None
+
+    if active:
+        parents = [d.gid for d in active]
+    else:
+        parents = None
+
     for line in lines:
         link = extract_link_from_after_line(line)
         if not link:
             continue
         task_id = _next_task_id()
         entry = {"link": link, "task_id": task_id, "retries": 0}
-        if parent not in src.bot.shared.after_queue:
-            src.bot.shared.after_queue[parent] = []
-        src.bot.shared.after_queue[parent].append(entry)
+
+        if prev_key:
+            src.bot.shared.after_queue.setdefault(prev_key, []).append(entry)
+            logger.info(f"after_file: queued {task_id} after previous task")
+        elif parents:
+            src.bot.shared.after_batch.append({"parents": parents.copy(), **entry})
+            logger.info(f"after_file: queued {task_id} after {len(parents)} download(s)")
+        else:
+            # no downloads — start immediately
+            asyncio.create_task(_run_after_file_directly(entry))
+            logger.info(f"after_file: started {task_id} immediately")
+
         queued.append(entry)
-        parent = task_id
+        prev_key = task_id
         logger.info(f"after_file: queued {task_id} link={link}")
 
     summary = "📋 <b>After chain queued:</b>\n"
     for i, entry in enumerate(queued):
         summary += f"{i+1}. 📎 {html.escape(entry['link'][:80])} (<code>{entry['task_id']}</code>)\n"
-    if downloads:
-        summary += f"\n⏳ First download will start after <code>{downloads[-1].gid}</code>"
+    if parents:
+        summary += f"\n⏳ First download will start after <b>{len(parents)}</b> download(s) complete"
     await bot.send_message(src.shared.ADMIN_ID, summary, parse_mode="HTML")
     return queued
+
+
+async def _run_after_directly(m: Message, entry: dict):
+    await bot.send_message(
+        src.shared.ADMIN_ID,
+        f"▶️ <b>After task starting (no wait):</b>\n{html.escape(entry['link'][:128])}",
+        parse_mode="HTML"
+    )
+    await process_after_task(entry)
+
+
+async def _run_after_file_directly(entry: dict):
+    await process_after_task(entry)
 
 
 async def process_after_task(task: dict) -> None:
@@ -212,7 +255,7 @@ async def process_after_task(task: dict) -> None:
     task_id = task["task_id"]
 
     for attempt in range(3):
-        delay = src.bot.after.parse_after_delay()
+        delay = parse_after_delay()
         await asyncio.sleep(delay)
 
         metadata = await src.http_client.get_file_metadata(link)
