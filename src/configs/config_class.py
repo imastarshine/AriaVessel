@@ -24,7 +24,7 @@ class Config:
         self.uri_filename_slugify: bool = False
 
         self.uri_filename_max_length: int = -1
-        self.after_delay: str = "2,10"
+        self.uri_files_after_delay: str = "2,10"
 
     def __setattr__(self, key: str, value: Any):
         if key == "uri_filename_max_length" and isinstance(value, int):
@@ -51,7 +51,15 @@ class Config:
             if not isinstance(config_json, dict):
                 logger.error(f'Config file is invalid. Expected JSON dictionary object but got {type(config_json)}')
                 raise ValueError("Config must be a dictionary")
+            config_keys = {
+                key: value
+                for key, value in vars(self).items()
+                if not key.startswith('__') and not callable(value)
+            }
             for key, value in config_json.items():
+                if key not in config_keys:
+                    logger.warning(f"Unknown configuration option '{key}' has been ignored on startup loading config")
+                    continue
                 setattr(self, key, value)
 
     def save(self):

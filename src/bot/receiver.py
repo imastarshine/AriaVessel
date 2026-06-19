@@ -122,7 +122,7 @@ def _find_single_parent(downloads: list, arg: str) -> str | None:
 
 def parse_after_delay(raw: str = "") -> float:
     if not raw:
-        raw = src.configs.config.after_delay
+        raw = src.configs.config.uri_files_after_delay
     if "," in raw:
         parts = [x.strip() for x in raw.split(",", 1)]
         try:
@@ -164,20 +164,19 @@ async def after_command(m: Message):
         msg = ""
 
         if len(parts) == 2:
-            # /after <link>  ->  wait for ALL current downloads (or chain)
-            active = [d for d in downloads if not _dl_finished(d)]
-            if not active:
-                if last:
-                    src.bot.shared.after_queue.setdefault(last, []).append(entry)
-                    msg = f"⏳ Queued – will start after previous task"
+            # /after <link>  ->  if we have a previous after task, chain to it
+            if last:
+                src.bot.shared.after_queue.setdefault(last, []).append(entry)
+                msg = "⏳ Queued – will start after previous task"
+            else:
+                active = [d for d in downloads if not _dl_finished(d)]
+                if active:
+                    parents = [d.gid for d in active]
+                    src.bot.shared.after_batch.append({"parents": parents, **entry})
+                    msg = f"⏳ Queued – will start after <b>{len(parents)}</b> download(s) complete"
                 else:
-                    # nothing to wait for — start immediately
                     asyncio.create_task(_run_after_directly(m, entry))
                     msg = "▶️ Starting now"
-            else:
-                parents = [d.gid for d in active]
-                src.bot.shared.after_batch.append({"parents": parents, **entry})
-                msg = f"⏳ Queued – will start after <b>{len(parents)}</b> download(s) complete"
 
         else:
             # /after <idx|gid> <link>
@@ -274,15 +273,17 @@ async def process_after_task(task: dict) -> None:
             logger.info(f"after task {task_id} added: {link}, gid={gid}")
             return
 
-        logger.warning(f"after task {task_id} HEAD attempt {attempt+1}/3 failed: {link}")
+        err_detail = f"{metadata.error} (HTTP {metadata.status_code})" if metadata.status_code else metadata.error
+        logger.warning(f"after task {task_id} HEAD attempt {attempt+1}/3 failed: {link} — {err_detail}")
         if attempt < 2:
             await bot.send_message(
                 src.shared.ADMIN_ID,
-                f"⚠️ <b>After HEAD failed</b> (retry {attempt+1}/3):\n{html.escape(link[:128])}",
+                f"⚠️ <b>After HEAD failed</b> (retry {attempt+1}/3):\n{html.escape(link[:128])}\n<code>{html.escape(err_detail)}</code>",
                 parse_mode="HTML"
             )
             await asyncio.sleep(60)
 
+    src.bot.shared.after_gid_map[task_id] = "__failed__"
     await bot.send_message(
         src.shared.ADMIN_ID,
         f"❌ <b>After task failed</b> (3 attempts):\n{html.escape(link[:128])}",
@@ -397,8 +398,8 @@ async def handle_source(m: Message):
                 if index == len(messages) - 1:
                     markup = InlineKeyboardMarkup()
                     markup.row(
-                        InlineKeyboardButton("Add", callback_data=f"confirm_y", style="success"),
-                        InlineKeyboardButton("Cancel", callback_data=f"confirm_n", style="danger")
+                        InlineKeyboardButton("Add", callback_data="confirm_y", style="success"),
+                        InlineKeyboardButton("Cancel", callback_data="confirm_n", style="danger")
                     )
                 logger.debug(f"index: {index}, msg: {msg}")
                 await bot.send_message(src.shared.ADMIN_ID, msg, reply_markup=markup, parse_mode="HTML")

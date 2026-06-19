@@ -17,7 +17,7 @@ def _resolve_parent_label(parent_key: str) -> str | None:
         return None
     if parent_key.startswith("__task_"):
         gid = src.bot.shared.after_gid_map.get(parent_key)
-        if gid:
+        if gid and gid != "__failed__":
             return gid
         return None
     return parent_key

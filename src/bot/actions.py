@@ -49,14 +49,13 @@ async def control_command(m: Message):
         message_builder = src.text.MessageBuilder()
 
         operation_results = control_action(cmd, downloads)
+        if not operation_results:
+            raise ValueError(f"Unknown action: {cmd}")
         for result, download in zip(operation_results, downloads):
             logger.info(f"result={result}, download name='{download}' {download.name} + gid {download.gid}")
             safe_name = html.escape(download.name)
-
-            if result is True:
-                message_builder.add_chunk(f"✅📦 <b>{safe_name}</b> (<code>{download.gid}</code>)")
-            else:
-                message_builder.add_chunk(f"❌📦 <b>{safe_name}</b> (<code>{download.gid}</code>)")
+            # aria2.pause/resume/remove return list[Download] on success, not bool
+            message_builder.add_chunk(f"{'✅' if result else '❌'}📦 <b>{safe_name}</b> (<code>{download.gid}</code>)")
 
         for failed in failed_list:
             message_builder.add_chunk(f"❓ {failed}")

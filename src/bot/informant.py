@@ -12,14 +12,16 @@ from src.logger import logger
 
 async def start_command(m: Message):
     await src.bot.bot.reply_to(m, "📊 <b>Available commands:</b>\n\n"
+                          "📊 <code>/status</code> - Show downloads status\n"
                           "⏸️ <code>/pause</code> - Pause torrent(s)\n"
-                          "▶️ <code>/play</code> - Resume torrent(s)\n"
+                          "▶️ <code>/resume</code> - Resume torrent(s)\n"
                           "🗑️ <code>/rm</code> - Remove torrent from client\n"
                           "🧹 <code>/del</code> - Delete torrent and files\n"
+                          "🔎 <code>/inspect</code> - Process inspection\n"
+                          "⏳ <code>/after</code> - Queue link after downloads complete\n"
                           "💿 <code>/upload</code> - Upload completed files to Yandex.Disk\n"
-                          "❌ <code>/upload_cancel</code> - Cancel uploading\n"
                           "📊 <code>/upload_status</code> - Upload status\n"
-                          "🔎 <code>/inspect</code> - Torrent inspect\n\n"
+                          "❌ <code>/upload_cancel</code> - Cancel uploading\n\n"
                           "⚙️ <code>/settings</code> - Settings\n\n"
                           "📎 Send <code>.torrent</code>, <code>.zip</code> archive, or <code>magnet:</code> link",
                        parse_mode="HTML")
@@ -56,24 +58,26 @@ async def inspect_command(m: Message):
         if d.is_torrent:
             try:
                 first_file_uri = d.files[0].uris
-                if first_file_uri and first_file_uri[0].get("uri").startswith('magent:'):
-                    if_magnet = True
+                if first_file_uri and first_file_uri[0].get("uri", "").startswith('magnet:'):
+                    is_magnet = True
             except Exception as ex:
-                logger.warn(f"got an exception on getting magnet information about: gid:{d.gid} | {ex}", exc_info=ex)
+                logger.warning(f"got an exception on getting magnet information about: gid:{d.gid} | {ex}", exc_info=ex)
 
-        # TODO: Add more details
-        report = (
-            f"🔍 <b>Inspection for</b>\n"
-            f"📎 <code>{html.escape(d.name)}</code>\n\n"
-            f"🆔 GID: <code>{d.gid}</code>\n"
-            f"🚦 Status: <b>{d.status}</b>\n"
-            f"📍 Path: <code>{d.dir}</code>\n"
-            f"👥 Peers: {d.connections}\n"
-            f"⚠️ Error: {d.error_message if d.error_message else 'no'}\n\n"
-            f"🧲 Magnet \n" if is_magnet else ""
-            f"🌐 Torrent \n" if d.is_torrent else ""
-            f"🗂️ <b>Files:</b>\n{files_info}"
-        )
+        parts = [
+            f"🔍 <b>Inspection for</b>\n",
+            f"📎 <code>{html.escape(d.name)}</code>\n\n",
+            f"🆔 GID: <code>{d.gid}</code>\n",
+            f"🚦 Status: <b>{d.status}</b>\n",
+            f"📍 Path: <code>{d.dir}</code>\n",
+            f"👥 Peers: {d.connections}\n",
+            f"⚠️ Error: {d.error_message if d.error_message else 'no'}\n\n",
+        ]
+        if is_magnet:
+            parts.append("🧲 Magnet \n")
+        if d.is_torrent:
+            parts.append("🌐 Torrent \n")
+        parts.append(f"🗂️ <b>Files:</b>\n{files_info}")
+        report = "".join(parts)
 
         await src.bot.bot.send_message(m.chat.id, report, parse_mode="HTML")
     except Exception as e:

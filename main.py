@@ -31,12 +31,13 @@ def _is_finished(gid: str) -> bool:
             return True
         return False
     except Exception:
-        return True
+        logger.warning(f"_is_finished: couldn't check gid={gid}, assuming not finished")
+        return False
 
 
 async def monitor():
-    known = {d.gid for d in aria2.get_downloads() if d.completed_length == get_total_size(d) and get_total_size(d) > 0}
-    known_removed = set()
+    known: set[str] = {d.gid for d in aria2.get_downloads() if d.completed_length == get_total_size(d) and get_total_size(d) > 0}
+    known_removed: set[str] = set()
     logger.info(f"monitor initialized with {len(known)} known completed downloads")
 
     while True:
@@ -76,11 +77,15 @@ async def monitor():
 
 
 async def after_worker():
-    known_removed = set()
+    known_removed: set[str] = set()
     while True:
         await asyncio.sleep(10)
 
         try:
+            # prune known_removed to prevent unbounded growth
+            if len(known_removed) > 1000:
+                known_removed.clear()
+
             # --- single-parent queue ---
             for parent_key in list(src.bot.shared.after_queue.keys()):
                 if parent_key not in src.bot.shared.after_queue:
@@ -99,6 +104,9 @@ async def after_worker():
                     gid = src.bot.shared.after_gid_map.get(parent_key)
                     if gid is None:
                         continue
+                    if gid == "__failed__":
+                        # HEAD failed — skip failed task, unblock chain
+                        ready = True
                 else:
                     gid = parent_key
 
@@ -109,18 +117,29 @@ async def after_worker():
 
                 if ready:
                     all_tasks = src.bot.shared.after_queue.pop(parent_key, [])
+                    # cleanup gid map for resolved task keys
+                    if parent_key.startswith("__task_") and parent_key in src.bot.shared.after_gid_map:
+                        del src.bot.shared.after_gid_map[parent_key]
                     for task in all_tasks:
                         await src.bot.receiver.process_after_task(task)
 
             # --- batch queue (all parents must finish) ---
-            still_pending: list[dict] = []
-            for batch in src.bot.shared.after_batch:
+            batch_copy = src.bot.shared.after_batch.copy()
+            src.bot.shared.after_batch.clear()
+            processed_ids: set[str] = set()
+            for batch in batch_copy:
+                if batch.get("task_id") in processed_ids:
+                    # already processed in this cycle (can happen with await yielding)
+                    continue
                 parents_left = [g for g in batch["parents"] if g not in known_removed and not _is_finished(g)]
                 if not parents_left:
                     await src.bot.receiver.process_after_task(batch)
+                    task_id = batch.get("task_id", "")
+                    if task_id and task_id in src.bot.shared.after_gid_map:
+                        del src.bot.shared.after_gid_map[task_id]
+                    processed_ids.add(task_id)
                 else:
-                    still_pending.append(batch)
-            src.bot.shared.after_batch = still_pending
+                    src.bot.shared.after_batch.append(batch)
 
         except Exception as e:
             logger.exception(f"after_worker error: {e}")

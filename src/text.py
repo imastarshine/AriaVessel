@@ -94,7 +94,7 @@ def parse_list(text: str):
     # /pause [1, 15,25] -> [1, 15, 25]
     clean_text = text.strip("[] ")
     if not clean_text:
-        return ValueError("Provided list is empty.")
+        raise ValueError("Provided list is empty.")
 
     return [int(x.strip()) for x in clean_text.split(',')]
 
