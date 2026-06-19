@@ -57,21 +57,18 @@ async def process_magnet_link(link: str):
 
 async def process_http_link(link: str):
     try:
-        logger.debug(f"Fetching http url '{link}'.")
         metadata = await src.http_client.get_file_metadata(link)
-        logger.info(f"Metadata fetched successfully: {metadata}")
 
         if metadata.success:
             options = get_uri_options(metadata)
             download = aria2.add_uris([link], options=options)
-            logger.info(f"Added HTTP link: {link}")
+            logger.info(f"added http link: {metadata.filename or link[:80]} ({download.gid})")
             return download, metadata
         else:
-            logger.error(
-                f"Failed to get metadata for {link} | Error = {metadata.error} | Code = {metadata.status_code}")
+            logger.error(f"metadata failed for {link[:80]}: {metadata.error} (HTTP {metadata.status_code})")
             await bot.send_message(
                 src.shared.ADMIN_ID,
-                f"❌ Failed to get metadata for {link}\nError: {metadata.error}\nCode : {metadata.status_code}"
+                f"❌ Failed to get metadata for {link[:128]}\nError: {metadata.error}\nCode: {metadata.status_code}"
             )
             return None
 
@@ -187,7 +184,7 @@ async def after_command(m: Message):
             src.bot.shared.after_queue.setdefault(parent, []).append(entry)
             msg = f"⏳ Queued – will start after <code>{parent[:16]}</code>"
 
-        await bot.reply_to(m, f"{msg}:\n{html.escape(link[:128])}", parse_mode="HTML")
+        await bot.reply_to(m, f"{msg}\n{html.escape(link[:128])}", parse_mode="HTML")
         logger.info(f"after: queued {task_id} link={link}")
     except Exception as e:
         logger.exception(f"after command error: {e}")
@@ -225,7 +222,6 @@ async def process_after_file(lines: list[str], m: Message) -> list:
 
         queued.append(entry)
         prev_key = task_id
-        logger.info(f"after_file: queued {task_id} link={link}")
 
     summary = "📋 <b>After chain queued:</b>\n"
     for i, entry in enumerate(queued):
@@ -270,11 +266,11 @@ async def process_after_task(task: dict) -> None:
                 f"▶️ <b>After download started:</b>\n📦 <b>{safe_name}</b> (<code>{gid}</code>)",
                 parse_mode="HTML"
             )
-            logger.info(f"after task {task_id} added: {link}, gid={gid}")
+            logger.info(f"after task {task_id} started: gid={gid} link={link[:80]}")
             return
 
         err_detail = f"{metadata.error} (HTTP {metadata.status_code})" if metadata.status_code else metadata.error
-        logger.warning(f"after task {task_id} HEAD attempt {attempt+1}/3 failed: {link} — {err_detail}")
+        logger.warning(f"after task {task_id} HEAD {attempt+1}/3: {err_detail} — {link[:80]}")
         if attempt < 2:
             await bot.send_message(
                 src.shared.ADMIN_ID,
@@ -293,7 +289,7 @@ async def process_after_task(task: dict) -> None:
 
 
 async def handle_source(m: Message):
-    logger.info(f"new message id: {m.message_id}")
+    logger.info(f"msg from {m.from_user.id}: {m.content_type}")
     tmp_dir: Path | None = None
     added = []
 
@@ -372,7 +368,7 @@ async def handle_source(m: Message):
 
         if added:
             src.bot.shared.pending_processes[src.shared.ADMIN_ID] = [d[0].gid if isinstance(d, tuple) else d.gid for d in added]
-            logger.info(f"pending processes: {src.bot.shared.pending_processes}")
+            logger.info(f"pending processes count: {len(added)}")
 
             messages = []
             message = "Found:\n"
@@ -414,22 +410,18 @@ async def handle_source(m: Message):
 
 async def confirm_callback(call: CallbackQuery):
     gids: list[str] = src.bot.shared.pending_processes.pop(src.shared.ADMIN_ID, [])
-    logger.debug(f"pending_torrents: {src.bot.shared.pending_processes}")
 
     if not gids:
-        logger.info(f"no torrents currently pending")
         await bot.answer_callback_query(call.id, text="No torrents currently pending")
         return
 
     try:
-        logger.info(f"callback query received: {call.data}, message id: {call.message.id}")
+        logger.info(f"confirm: {call.data} — {len(gids)} torrent(s)")
         if call.data == "confirm_y":
-            logger.info(f"user accepted download, starting to download {len(gids)} torrents")
             downloads = aria2.get_downloads(gids)
             aria2.resume(downloads)
             await bot.answer_callback_query(call.id, text="✅ Starting to download")
         elif call.data == "confirm_n":
-            logger.info(f"user canceled download, removing {len(gids)} torrents")
             downloads = aria2.get_downloads(gids)
             aria2.remove(downloads, force=True, files=True)
             await bot.answer_callback_query(call.id, text="❌ Canceled")
@@ -437,7 +429,7 @@ async def confirm_callback(call: CallbackQuery):
         if call.data.startswith("confirm_"):
             await bot.delete_message(call.message.chat.id, call.message.id)
     except Exception as e:
-        logger.exception(f"an error occurred on confirm_callback: {e}")
+        logger.exception(f"confirm_callback: {e}")
         await bot.send_message(call.message.chat.id,
                                text=f"❌ <b>Got error on confirmation:</b> <code>{html.escape(str(e))}</code>",
                                parse_mode="HTML")

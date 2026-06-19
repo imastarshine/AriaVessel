@@ -82,8 +82,8 @@ async def after_worker():
         await asyncio.sleep(10)
 
         try:
-            # prune known_removed to prevent unbounded growth
             if len(known_removed) > 1000:
+                logger.debug("pruning known_removed")
                 known_removed.clear()
 
             # --- single-parent queue ---
@@ -117,7 +117,7 @@ async def after_worker():
 
                 if ready:
                     all_tasks = src.bot.shared.after_queue.pop(parent_key, [])
-                    # cleanup gid map for resolved task keys
+                    logger.info(f"after_queue ready: {parent_key} -> {len(all_tasks)} task(s)")
                     if parent_key.startswith("__task_") and parent_key in src.bot.shared.after_gid_map:
                         del src.bot.shared.after_gid_map[parent_key]
                     for task in all_tasks:
@@ -133,6 +133,7 @@ async def after_worker():
                     continue
                 parents_left = [g for g in batch["parents"] if g not in known_removed and not _is_finished(g)]
                 if not parents_left:
+                    logger.info(f"after_batch ready: {batch.get('task_id', '?')} ({len(batch['parents'])} parent(s))")
                     await src.bot.receiver.process_after_task(batch)
                     task_id = batch.get("task_id", "")
                     if task_id and task_id in src.bot.shared.after_gid_map:

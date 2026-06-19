@@ -1,6 +1,6 @@
 import html
 
-from telebot.types import Message
+from telebot.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import src.aria2
 import src.aria2.statistics
@@ -12,32 +12,70 @@ from src.logger import logger
 
 async def start_command(m: Message):
     await src.bot.bot.reply_to(m, "📊 <b>Available commands:</b>\n\n"
-                          "📊 <code>/status</code> - Show downloads status\n"
-                          "⏸️ <code>/pause</code> - Pause torrent(s)\n"
-                          "▶️ <code>/resume</code> - Resume torrent(s)\n"
-                          "🗑️ <code>/rm</code> - Remove torrent from client\n"
-                          "🧹 <code>/del</code> - Delete torrent and files\n"
-                          "🔎 <code>/inspect</code> - Process inspection\n"
-                          "⏳ <code>/after</code> - Queue link after downloads complete\n"
-                          "💿 <code>/upload</code> - Upload completed files to Yandex.Disk\n"
-                          "📊 <code>/upload_status</code> - Upload status\n"
-                          "❌ <code>/upload_cancel</code> - Cancel uploading\n\n"
-                          "⚙️ <code>/settings</code> - Settings\n\n"
+                          "📊 <code>/status</code> — Show downloads status\n"
+                          "📊 <code>/status exclude-completed</code> — Hide completed\n"
+                          "⏸️ <code>/pause</code> — Pause torrent(s)\n"
+                          "▶️ <code>/resume</code> — Resume torrent(s)\n"
+                          "🗑️ <code>/rm</code> — Remove torrent from client\n"
+                          "🧹 <code>/del</code> — Delete torrent and files\n"
+                          "🔄 <code>/restart</code> — Restart download(s)\n"
+                          "🔎 <code>/inspect</code> — Process inspection\n"
+                          "⏳ <code>/after</code> — Queue link after downloads complete\n"
+                          "💿 <code>/upload</code> — Upload completed files to Yandex.Disk\n"
+                          "📊 <code>/upload_status</code> — Upload status\n"
+                          "❌ <code>/upload_cancel</code> — Cancel uploading\n\n"
+                          "⚙️ <code>/settings</code> — Settings\n\n"
                           "📎 Send <code>.torrent</code>, <code>.zip</code> archive, or <code>magnet:</code> link",
                        parse_mode="HTML")
 
 
+FILTER_CODES = {"a": None, "e": "e"}
+
+
+def _build_status_text(filter_code: str) -> tuple[str, bool]:
+    filter_str = FILTER_CODES.get(filter_code)
+    parts = src.aria2.statistics.get_status(filter_str)
+    if len(parts) == 1 and parts[0] == "🤷 There are no torrents currently":
+        return parts[0], True
+    return "\n\n".join(parts), len(parts) == 1
+
+
 async def status_command(m: Message):
-    logger.info(f"status command received from user {m.from_user.id}")
-    torrent_status = src.aria2.statistics.get_status()
+    parts = m.text.split(maxsplit=1)
+    filter_code = "a"
+    if len(parts) > 1 and parts[1].strip() == "exclude-completed":
+        filter_code = "e"
+    logger.info(f"status filter={filter_code}")
 
-    if len(torrent_status) == 1 and torrent_status[0] == "🤷 There are no torrents currently":
-        logger.info("no active torrents found")
-    else:
-        logger.info(f"returning status of {len(torrent_status)} torrent(s)")
+    text, single = _build_status_text(filter_code)
+    sent = await src.bot.bot.reply_to(m, text, parse_mode="HTML")
+    if single:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{sent.message_id}:{filter_code}"))
+        try:
+            await src.bot.bot.edit_message_reply_markup(sent.chat.id, sent.message_id, reply_markup=markup)
+        except Exception:
+            pass
 
-    for msg in torrent_status:
-        await src.bot.bot.reply_to(m, msg, parse_mode="HTML")
+
+async def status_update_callback(call: CallbackQuery):
+    try:
+        _, _, filter_code = call.data.split(":", 2)
+        text, single = _build_status_text(filter_code)
+        markup = None
+        if single:
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{call.message.message_id}:{filter_code}"))
+        await src.bot.bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        answer = "✅ Updated" if "no torrents" not in text.lower() else "ℹ️ Nothing found"
+        await src.bot.bot.answer_callback_query(call.id, text=answer)
+    except Exception as e:
+        err = str(e)
+        if "message is not modified" in err:
+            await src.bot.bot.answer_callback_query(call.id, text="ℹ️ No changes")
+        else:
+            await src.bot.bot.answer_callback_query(call.id, text="❌ Update failed")
+            logger.warning(f"status update: {e}")
 
 
 async def inspect_command(m: Message):

@@ -24,11 +24,19 @@ def initialize():
         src.bot.security.restricted(src.bot.informant.inspect_command),
         commands=['inspect']
     )
+    src.bot.bot.register_callback_query_handler(
+        src.bot.security.restricted(src.bot.informant.status_update_callback),
+        func=lambda call: call.data.startswith("su:")
+    )
 
     # actions.py
     src.bot.bot.register_message_handler(
         src.bot.security.restricted(src.bot.actions.control_command),
         commands=['pause', 'resume', 'rm', 'del']
+    )
+    src.bot.bot.register_message_handler(
+        src.bot.security.restricted(src.bot.actions.restart_command),
+        commands=['restart']
     )
 
     # settings.py

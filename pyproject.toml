@@ -1,6 +1,6 @@
 [project]
-name = "TelemetryLogu"
-version = "0.1.5"
+name = "AriaVessel"
+version = "0.1.6"
 description = ""
 authors = [
     {name = "None"}

@@ -120,6 +120,13 @@ def auto_translit(text: str) -> str:
 
 
 def parse_idx(idx: str, aria_downloads: list[Download]) -> tuple[list[Download], list[int | str]]:
+    # match by GID (16 hex chars)
+    if len(idx) == 16 and all(c in "0123456789abcdef" for c in idx):
+        for dl in aria_downloads:
+            if dl.gid == idx:
+                return [dl], []
+        return [], [idx]
+
     if idx.startswith("[") and idx.endswith("]"):
         idx = parse_list(idx)
     elif idx.find(",") > 0 and not idx.startswith("[") and not idx.endswith("]"):

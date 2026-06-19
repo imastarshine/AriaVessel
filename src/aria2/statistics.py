@@ -12,6 +12,15 @@ def get_total_size(download: Download):
     return sum(f.length for f in download.files)
 
 
+def is_completed(dl: Download) -> bool:
+    total = get_total_size(dl)
+    if dl.status == "complete":
+        return True
+    if 0 < total == dl.completed_length:
+        return True
+    return False
+
+
 def _resolve_parent_label(parent_key: str) -> str | None:
     if parent_key == AFTER_NONE:
         return None
@@ -41,15 +50,24 @@ def _build_after_block() -> str:
     return block
 
 
-def get_status() -> list[str]:
-    downloads = aria2.get_downloads()
+FILTER_ALL = "a"
+FILTER_EXCLUDE_COMPLETED = "e"
+
+
+def get_status(filter_str: str | None = None) -> list[str]:
+    all_downloads = aria2.get_downloads()
+
+    if filter_str == FILTER_EXCLUDE_COMPLETED:
+        downloads = [(i, d) for i, d in enumerate(all_downloads) if not is_completed(d)]
+    else:
+        downloads = list(enumerate(all_downloads))
 
     if not downloads and not src.bot.shared.after_queue and not src.bot.shared.after_batch:
         return ["🤷 There are no torrents currently"]
 
     message_builder = src.text.MessageBuilder()
 
-    for i, d in enumerate(downloads):
+    for i, d in downloads:
         total = sum(f.length for f in d.files)
         size_str = src.text.format_size(total) if total > 0 else "unknown size"
         speed_str = src.text.format_speed(d.download_speed) + f" (eta: {d.eta_string(2)})" if d.download_speed else "0 B/s"

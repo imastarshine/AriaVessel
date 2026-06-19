@@ -33,8 +33,7 @@ async def upload_command(m: Message):
         return
 
     try:
-        logger.info(f"received upload command: {m.text}")
-        logger.info(f"upload command from user {m.from_user.id}, message id: {m.message_id}")
+        logger.info(f"upload from user {m.from_user.id}")
         if not await disk.check():
             logger.error("yadisk token check failed")
             await src.bot.bot.reply_to(m, f"❌ <b>Failed to get disk</b>", parse_mode="HTML")
