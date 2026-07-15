@@ -3,8 +3,6 @@ import src.bot.shared
 import src.text
 import html
 
-from src.logger import logger
-
 from aria2p import Download
 
 AFTER_NONE = src.bot.shared.AFTER_NONE
@@ -34,53 +32,114 @@ def _resolve_parent_label(parent_key: str) -> str | None:
     return parent_key
 
 
-def _build_after_block() -> str:
+def _build_download_row(index: int, download: Download) -> str:
+    size_str = src.text.format_size(download.total_length) if download.total_length > 0 else "unknown size"
+    eta_str = download.eta_string(2) if download.download_speed else "∞"
+    speed_str = src.text.format_speed(download.download_speed) if download.download_speed else "0 B/s"
 
-    markdown = "## After\n---"
-    text_block = src.text.MessageBuilder(max_length=16384)
+    progress_percent = download.progress / 100 if download.progress else 0.0
+    progress_bar_str = src.text.generate_progress_bar(progress_percent, 10)
+
+    safe_name = html.escape(download.name or f"Unknown (g:{download.gid})")
+
+    if download.seeder:
+        status_icon, status_desc = "✅", "Sharing"
+    elif download.status == "active":
+        status_icon, status_desc = "🚀", speed_str
+    elif download.status == "paused":
+        status_icon, status_desc = "⏸", "Paused"
+    elif download.status == "error":
+        status_icon, status_desc = "❌", f"Error: {download.error_message} ({download.error_code})"
+    else:
+        status_icon, status_desc = "⏳", download.status.capitalize()
+
+    return f"""<tr>
+<td>{index}</td>
+<td>{safe_name} (<code>{download.gid}</code>)</td>
+<td align="right">{size_str}</td>
+<td>{progress_bar_str}</td>
+<td align="left">{eta_str}</td>
+<td>{status_icon} {status_desc}</td>
+</tr>"""
+
+
+def _build_after_rows() -> list[str]:
+    rows: list[str] = []
 
     for parent_key, tasks in src.bot.shared.after_queue.items():
         parent_label = _resolve_parent_label(parent_key)
         for task in tasks:
             truncated = task["link"][:128] if len(task["link"]) > 128 else task["link"]
-            url = f"{html.escape(truncated)}"
+            url = html.escape(truncated)
             after_gid = f"<code>{parent_label}</code>" if parent_label else "-"
-            text_block.add_chunk(f"""<tr>
-    <td>{url}</td>
-    <td>{after_gid}</td>
+            rows.append(f"""<tr>
+<td>{url}</td>
+<td>{after_gid}</td>
 </tr>""")
 
     for batch in src.bot.shared.after_batch:
         truncated = batch["link"][:128] if len(batch["link"]) > 128 else batch["link"]
-        url = f"{html.escape(truncated)}"
+        url = html.escape(truncated)
         after_gid = f"<b>{len(batch['parents'])}</b> download(s)"
-        text_block.add_chunk(f"""<tr>
-    <td>{url}</td>
-    <td>{after_gid}</td>
+        rows.append(f"""<tr>
+<td>{url}</td>
+<td>{after_gid}</td>
 </tr>""")
 
-    messages = text_block.get_messages()
-    if len(messages) > 0:
-        builded_text = "".join(messages)
-        markdown += f"""
-<table>
-<tr>
-    <td>URL</td>
-    <td>Task</td>
-</tr>
-{builded_text}
-</table>
-"""
-        return markdown
-    else:
-        return ""
+    return rows
+
+
+def _join_into_messages(
+    download_rows: list[str],
+    after_rows: list[str],
+    max_len: int = 30100,
+) -> list[str]:
+    messages: list[str] = []
+
+    current = "## Downloads\n---\n\n<table>\n<tr>\n<td>#</td>\n<td>Name</td>\n<td>Size</td>\n<td>Progress</td>\n<td>ETA</td>\n<td>Status</td>\n</tr>"
+
+    for row in download_rows:
+        if len(current) + 1 + len(row) > max_len:
+            current += "\n</table>"
+            messages.append(current)
+            current = "<table>\n<tr>\n<td>#</td>\n<td>Name</td>\n<td>Size</td>\n<td>Progress</td>\n<td>ETA</td>\n<td>Status</td>\n</tr>\n" + row
+        else:
+            current += "\n" + row
+
+    current += "\n</table>"
+
+    if after_rows:
+        after_head = "\n\n## After\n---\n\n<table>\n<tr>\n<td>URL</td>\n<td>Task</td>\n</tr>"
+        after_foot = "\n</table>"
+        after_rows_str = "\n".join(after_rows)
+        after_block = after_head + "\n" + after_rows_str + after_foot
+
+        if len(current) + len(after_block) <= max_len:
+            current += after_block
+        else:
+            if current:
+                messages.append(current)
+            current = "## After\n---\n\n<table>\n<tr>\n<td>URL</td>\n<td>Task</td>\n</tr>"
+            for row in after_rows:
+                if len(current) + 1 + len(row) > max_len:
+                    current += "\n</table>"
+                    messages.append(current)
+                    current = "<table>\n<tr>\n<td>URL</td>\n<td>Task</td>\n</tr>\n" + row
+                else:
+                    current += "\n" + row
+            current += "\n</table>"
+
+    if current:
+        messages.append(current)
+
+    return messages
 
 
 FILTER_ALL = "a"
 FILTER_EXCLUDE_COMPLETED = "e"
 
 
-def get_status(filter_str: str | None = None) -> str:
+def get_status(filter_str: str | None = None) -> list[str]:
     all_downloads = aria2.get_downloads()
 
     if filter_str == FILTER_EXCLUDE_COMPLETED:
@@ -88,59 +147,10 @@ def get_status(filter_str: str | None = None) -> str:
     else:
         downloads = list(enumerate(all_downloads))
 
-    markdown = "## Downloads\n---"
-    text_builder = src.text.MessageBuilder(max_length=30_000)
+    if not downloads and not src.bot.shared.after_queue and not src.bot.shared.after_batch:
+        return ["🤷 There are no torrents currently"]
 
-    if len(downloads) == 0:
-        markdown += "\n- 🤷 There are no downloads currently"
-    else:
+    download_rows = [_build_download_row(i, d) for i, d in downloads]
+    after_rows = _build_after_rows()
 
-
-        markdown += "\n\n<table>"
-        markdown += """\n    <tr>
-    <td>#</td>
-    <td>Name</td>
-    <td>Size</td>
-    <td>Progress</td>
-    <td>ETA</td>
-    <td>Status</td>
-    </tr>"""
-
-        for index, download in downloads:
-            size_str = src.text.format_size(download.total_length) if download.total_length > 0 else "unknown size"
-            eta_str = download.eta_string(2) if download.download_speed else "∞"
-            speed_str = src.text.format_speed(download.download_speed) if download.download_speed else "0 B/s"
-
-            progress_percent = download.progress / 100 if download.progress else 0.0
-            progress_bar_str = src.text.generate_progress_bar(progress_percent, 10)
-
-            safe_name = html.escape(download.name or f"Unknown (g:{download.gid})")
-
-            if download.seeder:
-                status_icon, status_desc = "✅", "Sharing"
-            elif download.status == "active":
-                status_icon, status_desc = "🚀", speed_str
-            elif download.status == "paused":
-                status_icon, status_desc = "⏸", "Paused"
-            elif download.status == "error":
-                status_icon, status_desc = "❌", f"Error: {download.error_message} ({download.error_code})"
-            else:
-                status_icon, status_desc = "⏳", download.status.capitalize()
-
-            text_builder.add_chunk(f"""<tr>
-        <td>{index}</td>
-        <td>{safe_name} (<code>{download.gid}</code>)</td>
-        <td align="right">{size_str}</td>
-        <td>{progress_bar_str}</td>
-        <td align="left">{eta_str}</td>
-        <td>{status_icon} {status_desc}</td>
-    </tr>""")
-
-        markdown += "\n".join(text_builder.get_messages()) + f"\n</table>"
-
-    after_block = _build_after_block()
-    if after_block:
-        markdown += f"\n\n{after_block}"
-
-    logger.info(f"markdown length: {len(markdown)}")
-    return markdown
+    return _join_into_messages(download_rows, after_rows)

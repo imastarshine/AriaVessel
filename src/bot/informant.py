@@ -14,7 +14,7 @@ from src.logger import logger
 async def start_command(m: Message):
     await src.bot.bot.reply_to(m, "📊 <b>Available commands:</b>\n\n"
                           "📊 <code>/status</code> — Show downloads status\n"
-                          "📊 <code>/status exclude-completed</code> — Hide completed\n"
+                          "📊 <code>/status exclude-completed | e</code> — Hide completed\n"
                           "⏸️ <code>/pause</code> — Pause torrent(s)\n"
                           "▶️ <code>/resume</code> — Resume torrent(s)\n"
                           "🗑️ <code>/rm</code> — Remove torrent from client\n"
@@ -33,6 +33,12 @@ async def start_command(m: Message):
 FILTER_CODES = {"a": None, "e": "e"}
 
 
+def _build_status_text(filter_code: str) -> list[str]:
+    filter_str = FILTER_CODES.get(filter_code)
+    parts = src.aria2.statistics.get_status(filter_str)
+    return parts
+
+
 async def status_command(m: Message):
     args = m.text.removeprefix("/status ").strip()
 
@@ -41,21 +47,40 @@ async def status_command(m: Message):
         filter_code = "e"
 
     logger.info(f"Getting status with filter: {filter_code}")
-    markdown = src.aria2.statistics.get_status(filter_code)
+    parts = _build_status_text(filter_code)
 
-    try:
+    if len(parts) == 1:
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{filter_code}"))
-        await src.bot.bot.send_rich_message(m.chat.id, telebot.types.InputRichMessage(markdown=markdown), reply_markup=markup)
-    except Exception as e:
-        logger.error(f"got error on sending rich message for status command: {e}")
-
+        try:
+            await src.bot.bot.send_rich_message(
+                m.chat.id,
+                telebot.types.InputRichMessage(markdown=parts[0]),
+                reply_markup=markup,
+            )
+        except Exception as e:
+            logger.error(f"got error on sending rich message for status command: {e}")
+    else:
+        for part in parts:
+            try:
+                await src.bot.bot.send_rich_message(
+                    m.chat.id,
+                    telebot.types.InputRichMessage(markdown=part),
+                )
+            except Exception as e:
+                logger.error(f"got error on sending rich message chunk: {e}")
+                break
 
 
 async def status_update_callback(call: CallbackQuery):
     try:
         _, filter_code = call.data.split(":", 1)
-        markdown = src.aria2.statistics.get_status(filter_code)
+        parts = _build_status_text(filter_code)
+
+        if len(parts) > 1 or len(parts[0]) > 30100:
+            await src.bot.bot.answer_callback_query(call.id, text="❌ Status too large, use /status command")
+            return
+
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{filter_code}"))
 
@@ -64,7 +89,7 @@ async def status_update_callback(call: CallbackQuery):
             call.message.chat.id,
             call.message.message_id,
             reply_markup=markup,
-            rich_message=telebot.types.InputRichMessage(markdown=markdown)
+            rich_message=telebot.types.InputRichMessage(markdown=parts[0]),
         )
         await src.bot.bot.answer_callback_query(call.id, text="✅ Updated")
     except Exception as e:
@@ -118,4 +143,3 @@ async def inspect_command(m: Message):
         await src.bot.bot.send_message(m.chat.id, report, parse_mode="HTML")
     except Exception as e:
         await src.bot.bot.reply_to(m, f"❌ <b>An error occurred on inspection</b>: {e}", parse_mode="HTML")
-
