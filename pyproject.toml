@@ -1,6 +1,6 @@
 [project]
 name = "AriaVessel"
-version = "0.1.7"
+version = "0.1.8"
 description = ""
 authors = [
     {name = "None"}
@@ -9,7 +9,7 @@ license = {text = "Apache License 2.0"}
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pytelegrambotapi (>=4.32.0,<5.0.0)",
+    "pytelegrambotapi (==4.35.0)",
     "aria2p (>=0.12.1,<0.13.0)",
     "yadisk (>=3.4.0,<4.0.0)",
     "aiohttp (>=3.13.5,<4.0.0)",

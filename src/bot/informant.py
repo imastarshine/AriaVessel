@@ -1,5 +1,6 @@
 import html
 
+import telebot.types
 from telebot.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import src.aria2
@@ -32,43 +33,40 @@ async def start_command(m: Message):
 FILTER_CODES = {"a": None, "e": "e"}
 
 
-def _build_status_text(filter_code: str) -> tuple[str, bool]:
-    filter_str = FILTER_CODES.get(filter_code)
-    parts = src.aria2.statistics.get_status(filter_str)
-    if len(parts) == 1 and parts[0] == "🤷 There are no torrents currently":
-        return parts[0], True
-    return "\n\n".join(parts), len(parts) == 1
-
-
 async def status_command(m: Message):
-    parts = m.text.split(maxsplit=1)
-    filter_code = "a"
-    if len(parts) > 1 and parts[1].strip() == "exclude-completed":
-        filter_code = "e"
-    logger.info(f"status filter={filter_code}")
+    args = m.text.removeprefix("/status ").strip()
 
-    text, single = _build_status_text(filter_code)
-    sent = await src.bot.bot.reply_to(m, text, parse_mode="HTML")
-    if single:
+    filter_code = "a"
+    if args.lower() in ["e", "exclude-completed"]:
+        filter_code = "e"
+
+    logger.info(f"Getting status with filter: {filter_code}")
+    markdown = src.aria2.statistics.get_status(filter_code)
+
+    try:
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{sent.message_id}:{filter_code}"))
-        try:
-            await src.bot.bot.edit_message_reply_markup(sent.chat.id, sent.message_id, reply_markup=markup)
-        except Exception:
-            pass
+        markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{filter_code}"))
+        await src.bot.bot.send_rich_message(m.chat.id, telebot.types.InputRichMessage(markdown=markdown), reply_markup=markup)
+    except Exception as e:
+        logger.error(f"got error on sending rich message for status command: {e}")
+
 
 
 async def status_update_callback(call: CallbackQuery):
     try:
-        _, _, filter_code = call.data.split(":", 2)
-        text, single = _build_status_text(filter_code)
-        markup = None
-        if single:
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{call.message.message_id}:{filter_code}"))
-        await src.bot.bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
-        answer = "✅ Updated" if "no torrents" not in text.lower() else "ℹ️ Nothing found"
-        await src.bot.bot.answer_callback_query(call.id, text=answer)
+        _, filter_code = call.data.split(":", 1)
+        markdown = src.aria2.statistics.get_status(filter_code)
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔄 Update", callback_data=f"su:{filter_code}"))
+
+        await src.bot.bot.edit_message_text(
+            None,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=markup,
+            rich_message=telebot.types.InputRichMessage(markdown=markdown)
+        )
+        await src.bot.bot.answer_callback_query(call.id, text="✅ Updated")
     except Exception as e:
         err = str(e)
         if "message is not modified" in err:
