@@ -86,13 +86,14 @@ Copy the example and fill in your values:
 cp .env-example .env
 ```
 
-| Variable | What it is |
-|----------|-----------|
-| `BOT_TOKEN` | Your Telegram bot token from BotFather |
-| `ADMIN_ID` | Your Telegram user ID (the bot only responds to you) |
-| `ARIA2_SECRET` | The RPC secret set in your aria2 config |
-| `YADISK_TOKEN` | Yandex.Disk OAuth token (optional, only needed for upload) |
-| `TORRENT_DIRECTORY` | Path where aria2 saves downloads (used by upload) |
+| Variable            | What it is                                                 |
+|---------------------|------------------------------------------------------------|
+| `BOT_TOKEN`         | Your Telegram bot token from BotFather                     |
+| `ADMIN_ID`          | Your Telegram user ID (the bot only responds to you)       |
+| `ARIA2_SECRET`      | The RPC secret set in your aria2 config                    |
+| `YADISK_TOKEN`      | Yandex.Disk OAuth token (optional, only needed for upload) |
+| `TORRENT_DIRECTORY` | Path where aria2 saves downloads (used by upload)          |
+| `YADISK_URL_PROXY`  | Socks5 proxy for Yandex.Disk (optional)                    |
 
 ### 3. Start aria2
 
@@ -131,7 +132,4 @@ The bot prints basic logs to stdout. Log files are stored in the `logs/` directo
 
 If you configure `YADISK_TOKEN`, `/upload` copies completed files to your Yandex.Disk. The bot creates an isolated folder under "Applications" on your Yandex.Disk and places files inside an `ariavessel` subfolder. Without a token, the bot still manages aria2 downloads normally.
 
-You can get a Yandex.Disk OAuth token here:
-```
-https://oauth.yandex.ru/authorize?response_type=token&client_id=6f4cad7c59b7485088f400fe2ffeea84
-```
+You can get a Yandex.Disk OAuth token [here](https://oauth.yandex.ru/authorize?response_type=token&client_id=6f4cad7c59b7485088f400fe2ffeea84)

@@ -1,7 +1,10 @@
+from yadisk.sessions.async_httpx_session import AsyncHTTPXSession
+
 from src.logger import logger
 import yadisk
+import src.shared
 
-from src.shared import YADISK_TOKEN
+proxy_session = AsyncHTTPXSession(proxy=src.shared.YADISK_URL_PROXY) if src.shared.YADISK_URL_PROXY else None
 
 
 class YDisk:
@@ -9,7 +12,10 @@ class YDisk:
         self.client = None
 
     async def init(self):
-        self.client = yadisk.AsyncClient(token=YADISK_TOKEN)
+        self.client = yadisk.AsyncClient(
+            token=src.shared.YADISK_TOKEN,
+            session=proxy_session
+        )
 
     async def check(self):
         try:
