@@ -1,12 +1,15 @@
 import asyncio
 import html
 
+from telebot import asyncio_helper
+
 import src.text
 import src.configs
 import src.bot.shared
 import src.bot.upload
 import src.bot.command_initialize
 import src.bot.receiver
+import src.bot.after
 
 from src.logger import logger, cleanup_old_logs
 from src.shared import ADMIN_ID
@@ -15,29 +18,9 @@ from src.aria2 import aria2
 from src.aria2.statistics import get_total_size
 from src.bot import bot
 
-AFTER_NONE = src.bot.shared.AFTER_NONE
-
-
-def _is_finished(gid: str) -> bool:
-    try:
-        dls = aria2.get_downloads([gid])
-        if not dls:
-            return True
-        dl = dls[0]
-        total = get_total_size(dl)
-        if dl.status in ("complete", "error", "removed"):
-            return True
-        if 0 < total == dl.completed_length:
-            return True
-        return False
-    except Exception:
-        logger.warning(f"_is_finished: couldn't check gid={gid}, assuming not finished")
-        return False
-
 
 async def monitor():
     known: set[str] = {d.gid for d in aria2.get_downloads() if d.completed_length == get_total_size(d) and get_total_size(d) > 0}
-    known_removed: set[str] = set()
     logger.info(f"monitor initialized with {len(known)} known completed downloads")
 
     while True:
@@ -77,73 +60,13 @@ async def monitor():
 
 
 async def after_worker():
-    known_removed: set[str] = set()
     while True:
         await asyncio.sleep(10)
 
         try:
-            if len(known_removed) > 1000:
-                logger.debug("pruning known_removed")
-                known_removed.clear()
-
-            # --- single-parent queue ---
-            for parent_key in list(src.bot.shared.after_queue.keys()):
-                if parent_key not in src.bot.shared.after_queue:
-                    continue
-                tasks = src.bot.shared.after_queue[parent_key]
-                if not tasks:
-                    del src.bot.shared.after_queue[parent_key]
-                    continue
-
-                ready = False
-                gid: str | None = None
-
-                if parent_key == AFTER_NONE:
-                    ready = True
-                elif parent_key.startswith("__task_"):
-                    gid = src.bot.shared.after_gid_map.get(parent_key)
-                    if gid is None:
-                        continue
-                    if gid == "__failed__":
-                        # HEAD failed — skip failed task, unblock chain
-                        ready = True
-                else:
-                    gid = parent_key
-
-                if not ready and gid:
-                    if gid in known_removed or _is_finished(gid):
-                        ready = True
-                        known_removed.add(gid)
-
-                if ready:
-                    all_tasks = src.bot.shared.after_queue.pop(parent_key, [])
-                    logger.info(f"after_queue ready: {parent_key} -> {len(all_tasks)} task(s)")
-                    if parent_key.startswith("__task_") and parent_key in src.bot.shared.after_gid_map:
-                        del src.bot.shared.after_gid_map[parent_key]
-                    for task in all_tasks:
-                        await src.bot.receiver.process_after_task(task)
-
-            # --- batch queue (all parents must finish) ---
-            batch_copy = src.bot.shared.after_batch.copy()
-            src.bot.shared.after_batch.clear()
-            processed_ids: set[str] = set()
-            for batch in batch_copy:
-                if batch.get("task_id") in processed_ids:
-                    # already processed in this cycle (can happen with await yielding)
-                    continue
-                parents_left = [g for g in batch["parents"] if g not in known_removed and not _is_finished(g)]
-                if not parents_left:
-                    logger.info(f"after_batch ready: {batch.get('task_id', '?')} ({len(batch['parents'])} parent(s))")
-                    await src.bot.receiver.process_after_task(batch)
-                    task_id = batch.get("task_id", "")
-                    if task_id and task_id in src.bot.shared.after_gid_map:
-                        del src.bot.shared.after_gid_map[task_id]
-                    processed_ids.add(task_id)
-                else:
-                    src.bot.shared.after_batch.append(batch)
-
+            await src.bot.after.check()
         except Exception as e:
-            logger.exception(f"after_worker error: {e}")
+            logger.warning(f"an exception occurred on after_worker: {e}", exc_info=True)
 
 
 async def main():
@@ -163,6 +86,11 @@ async def main():
     except Exception as e:
         logger.error(f"failed to connect to aria2: {e}")
         raise
+
+    if (src.shared.TELEGRAM_BOT_SOCKS5_PROXY
+            and isinstance(src.shared.TELEGRAM_BOT_SOCKS5_PROXY, str)
+            and src.shared.TELEGRAM_BOT_SOCKS5_PROXY.startswith("socks5")):
+        asyncio_helper.proxy = src.shared.TELEGRAM_BOT_SOCKS5_PROXY
 
     src.bot.command_initialize.initialize()
     asyncio.create_task(monitor())

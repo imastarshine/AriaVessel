@@ -1,47 +1,22 @@
 import asyncio
 import html
-import random
-import re
 import shutil
 import zipfile
 
-from slugify import slugify
 from telebot.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import src.aria2.statistics
 import src.http_client
 import src.bot.shared
-import src.configs
 import src.shared
 import src.text
+import src.bot.after
+import src.lists
+from src.http_client import get_uri_options
 from src.logger import logger
 from src.aria2 import aria2
 from src.bot import bot
-
 from pathlib import Path
-
-
-def get_uri_options(metadata: src.http_client.FileMetadataResult) -> dict[str, str]:
-    options = {
-        "pause": "true"
-    }
-    if src.configs.config.uri_filename_rename:
-        file_path = Path(metadata.filename)
-        file_suffix = file_path.suffix
-        new_file_name = file_path.stem
-
-        if src.configs.config.uri_filename_translit:
-            new_file_name = src.text.auto_translit(new_file_name)
-
-        if src.configs.config.uri_filename_slugify:
-            new_file_name = slugify(new_file_name)
-
-        if 0 < src.configs.config.uri_filename_max_length < len(new_file_name):
-            new_file_name = new_file_name[:src.configs.config.uri_filename_max_length]
-
-        options["out"] = f"{new_file_name}{file_suffix}"
-
-    return options
 
 
 async def process_magnet_link(link: str):
@@ -78,216 +53,6 @@ async def process_http_link(link: str):
         return None
 
 
-def extract_link_from_after_line(line: str) -> str | None:
-    parts = line.strip().split(maxsplit=2)
-    if len(parts) < 2:
-        return None
-    link = parts[-1]
-    if link.startswith(("http://", "https://")):
-        return link
-    return None
-
-
-def _next_task_id() -> str:
-    src.bot.shared.after_counter = getattr(src.bot.shared, "after_counter", 0) + 1
-    task_id = f"__task_{src.bot.shared.after_counter}__"
-    src.bot.shared.after_last_task_id = task_id
-    return task_id
-
-
-def _dl_finished(dl) -> bool:
-    from src.aria2.statistics import get_total_size
-    total = get_total_size(dl)
-    if dl.status in ("complete", "error", "removed"):
-        return True
-    if 0 < total == dl.completed_length:
-        return True
-    return False
-
-
-def _find_single_parent(downloads: list, arg: str) -> str | None:
-    if len(arg) == 16 and all(c in "0123456789abcdef" for c in arg):
-        return arg
-    try:
-        dl_list, _ = src.text.parse_idx(arg, downloads)
-        if dl_list:
-            return dl_list[0].gid
-    except (ValueError, IndexError):
-        pass
-    return None
-
-
-def parse_after_delay(raw: str = "") -> float:
-    if not raw:
-        raw = src.configs.config.uri_files_after_delay
-    if "," in raw:
-        parts = [x.strip() for x in raw.split(",", 1)]
-        try:
-            a, b = float(parts[0]), float(parts[1])
-        except (ValueError, IndexError):
-            return 2.0
-        if a < 0.25:
-            a = 0.25
-        if b < 0.25:
-            b = 0.25
-        if a > b:
-            a, b = b, a
-        return random.uniform(a, b)
-    else:
-        try:
-            v = float(raw)
-        except ValueError:
-            return 2.0
-        return max(v, 0.25)
-
-
-async def after_command(m: Message):
-    try:
-        parts = m.text.split(maxsplit=2)
-        if len(parts) < 2:
-            await bot.reply_to(m, "❌ Usage: /after <http-link> or /after <idx> <http-link> or /after <gid> <http-link>", parse_mode="HTML")
-            return
-
-        link = parts[-1]
-        if not link.startswith(("http://", "https://")):
-            await bot.reply_to(m, "❌ The link must be http:// or https://", parse_mode="HTML")
-            return
-
-        # save previous task BEFORE _next_task_id overwrites after_last_task_id
-        last = src.bot.shared.after_last_task_id
-        task_id = _next_task_id()
-        entry = {"link": link, "task_id": task_id, "retries": 0}
-        downloads = aria2.get_downloads()
-        msg = ""
-
-        if len(parts) == 2:
-            # /after <link>  ->  if we have a previous after task, chain to it
-            if last:
-                src.bot.shared.after_queue.setdefault(last, []).append(entry)
-                msg = "⏳ Queued – will start after previous task"
-            else:
-                active = [d for d in downloads if not _dl_finished(d)]
-                if active:
-                    parents = [d.gid for d in active]
-                    src.bot.shared.after_batch.append({"parents": parents, **entry})
-                    msg = f"⏳ Queued – will start after <b>{len(parents)}</b> download(s) complete"
-                else:
-                    asyncio.create_task(_run_after_directly(m, entry))
-                    msg = "▶️ Starting now"
-
-        else:
-            # /after <idx|gid> <link>
-            parent = _find_single_parent(downloads, parts[1])
-            if parent is None:
-                await bot.reply_to(m, "❌ Invalid ID or GID specified", parse_mode="HTML")
-                return
-            src.bot.shared.after_queue.setdefault(parent, []).append(entry)
-            msg = f"⏳ Queued – will start after <code>{parent[:16]}</code>"
-
-        await bot.reply_to(m, f"{msg}\n{html.escape(link[:128])}", parse_mode="HTML")
-        logger.info(f"after: queued {task_id} link={link}")
-    except Exception as e:
-        logger.exception(f"after command error: {e}")
-        await bot.reply_to(m, f"❌ <b>Error:</b> <code>{html.escape(str(e))}</code>", parse_mode="HTML")
-
-
-async def process_after_file(lines: list[str], m: Message) -> list:
-    downloads = aria2.get_downloads()
-    active = [d for d in downloads if not _dl_finished(d)]
-    queued = []
-    prev_key: str | None = None
-
-    if active:
-        parents = [d.gid for d in active]
-    else:
-        parents = None
-
-    for line in lines:
-        link = extract_link_from_after_line(line)
-        if not link:
-            continue
-        task_id = _next_task_id()
-        entry = {"link": link, "task_id": task_id, "retries": 0}
-
-        if prev_key:
-            src.bot.shared.after_queue.setdefault(prev_key, []).append(entry)
-            logger.info(f"after_file: queued {task_id} after previous task")
-        elif parents:
-            src.bot.shared.after_batch.append({"parents": parents.copy(), **entry})
-            logger.info(f"after_file: queued {task_id} after {len(parents)} download(s)")
-        else:
-            # no downloads — start immediately
-            asyncio.create_task(_run_after_file_directly(entry))
-            logger.info(f"after_file: started {task_id} immediately")
-
-        queued.append(entry)
-        prev_key = task_id
-
-    summary = "📋 <b>After chain queued:</b>\n"
-    for i, entry in enumerate(queued):
-        summary += f"{i+1}. 📎 {html.escape(entry['link'][:80])} (<code>{entry['task_id']}</code>)\n"
-    if parents:
-        summary += f"\n⏳ First download will start after <b>{len(parents)}</b> download(s) complete"
-    await bot.send_message(src.shared.ADMIN_ID, summary, parse_mode="HTML")
-    return queued
-
-
-async def _run_after_directly(m: Message, entry: dict):
-    await bot.send_message(
-        src.shared.ADMIN_ID,
-        f"▶️ <b>After task starting (no wait):</b>\n{html.escape(entry['link'][:128])}",
-        parse_mode="HTML"
-    )
-    await process_after_task(entry)
-
-
-async def _run_after_file_directly(entry: dict):
-    await process_after_task(entry)
-
-
-async def process_after_task(task: dict) -> None:
-    link = task["link"]
-    task_id = task["task_id"]
-
-    for attempt in range(3):
-        delay = parse_after_delay()
-        await asyncio.sleep(delay)
-
-        metadata = await src.http_client.get_file_metadata(link)
-        if metadata.success:
-            options = get_uri_options(metadata)
-            result = aria2.add_uris([link], options=options)
-            gid = result.gid
-            src.bot.shared.after_gid_map[task_id] = gid
-            aria2.resume([result])
-            safe_name = html.escape(result.name or link)
-            await bot.send_message(
-                src.shared.ADMIN_ID,
-                f"▶️ <b>After download started:</b>\n📦 <b>{safe_name}</b> (<code>{gid}</code>)",
-                parse_mode="HTML"
-            )
-            logger.info(f"after task {task_id} started: gid={gid} link={link[:80]}")
-            return
-
-        err_detail = f"{metadata.error} (HTTP {metadata.status_code})" if metadata.status_code else metadata.error
-        logger.warning(f"after task {task_id} HEAD {attempt+1}/3: {err_detail} — {link[:80]}")
-        if attempt < 2:
-            await bot.send_message(
-                src.shared.ADMIN_ID,
-                f"⚠️ <b>After HEAD failed</b> (retry {attempt+1}/3):\n{html.escape(link[:128])}\n<code>{html.escape(err_detail)}</code>",
-                parse_mode="HTML"
-            )
-            await asyncio.sleep(60)
-
-    src.bot.shared.after_gid_map[task_id] = "__failed__"
-    await bot.send_message(
-        src.shared.ADMIN_ID,
-        f"❌ <b>After task failed</b> (3 attempts):\n{html.escape(link[:128])}",
-        parse_mode="HTML"
-    )
-    logger.error(f"after task {task_id} failed after 3 attempts: {link}")
-
-
 async def handle_source(m: Message):
     logger.info(f"msg from {m.from_user.id}: {m.content_type}")
     tmp_dir: Path | None = None
@@ -302,23 +67,41 @@ async def handle_source(m: Message):
                 text_content = content.decode('utf-8')
 
                 lines = text_content.strip().splitlines()
-                after_lines = [ln for ln in lines if ln.strip().startswith("/after")]
+                after_links = []
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
 
-                if after_lines and all(ln.strip().startswith("/after") for ln in lines if ln.strip()):
-                    added = await process_after_file(lines, m)
-                    return
+                    try:
+                        if line.startswith("magnet:"):
+                            res = await process_magnet_link(line)
+                            added += [res] if res else []
+                        elif line.startswith(("http://", "https://")):
+                            res = await process_http_link(line)
+                            added += [res] if res else []
+                        elif line.startswith(("/after https://", "/after http://")):
+                            after_links.append(line.removeprefix("/after ").strip())
+                    except Exception as e:
+                        logger.warning(f"failed to process line '{line[:80]}': {e}")
 
-                links = re.findall(r'magnet:\S+|https?://\S+', text_content)
-                for link in links:
-                    link = link.strip()
-                    if link.startswith('magnet:'):
-                        res = await process_magnet_link(link)
-                        if res:
-                            added.append(res)
-                    elif link.startswith('http://') or link.startswith('https://'):
-                        res = await process_http_link(link)
-                        if res:
-                            added.append(res)
+                for after_link in after_links:
+                    last_task = src.lists.safe_get_from_list(src.bot.after.after_tasks, -1)
+                    logger.info(
+                        f"adding new after task (from file): {after_link} and {last_task.id if last_task else 'None (not found)'} (not specified ID)")
+                    src.bot.after.add_task(after_link, [last_task.id] if last_task else None)
+
+                if after_links:
+                    logger.info(f"queued {len(after_links)} after task(s) from .txt file")
+                    string_links = [f"📎 <code>{html.escape(after_link[:128])}</code>" for after_link in after_links]
+                    await bot.send_message(
+                        src.shared.ADMIN_ID,
+                        f"⏳ Queued {len(after_links)} after task(s):\n" + "\n".join(string_links),
+                        parse_mode="HTML"
+                    )
+                elif not added:
+                    logger.info("no links found in .txt file")
+                    await bot.send_message(src.shared.ADMIN_ID, "📄 No links found in the .txt file")
 
             # Handle .zip files
             elif m.document.file_name.endswith('.zip'):

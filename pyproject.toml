@@ -1,9 +1,9 @@
 [project]
 name = "AriaVessel"
-version = "0.2.0"
+version = "0.2.1"
 description = ""
 authors = [
-    {name = "imastarshine", email = "starshine@imastarshine.ru"}
+    {name = "imastarshine", email = "tech.starshine@yandex.ru"}
 ]
 license = {text = "Apache License 2.0"}
 readme = "README.md"

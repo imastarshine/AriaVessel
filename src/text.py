@@ -137,10 +137,13 @@ def parse_idx(idx: str, aria_downloads: list[Download]) -> tuple[list[Download],
         raise ValueError(f"Can't parse idx: {idx} correctly")
 
     failed_list = []
-    if isinstance(idx, list):
-        downloads, failed_list = multi_index_list(aria_downloads, idx)
-    else:
-        downloads = [aria_downloads[idx]]
+    try:
+        if isinstance(idx, list):
+            downloads, failed_list = multi_index_list(aria_downloads, idx)
+        else:
+            downloads = [aria_downloads[idx]]
+    except IndexError:
+        downloads = []
 
     return downloads, failed_list
 

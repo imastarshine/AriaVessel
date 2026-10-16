@@ -1,11 +1,9 @@
 from src.aria2 import aria2
-import src.bot.shared
+import src.bot.after
 import src.text
 import html
 
 from aria2p import Download
-
-AFTER_NONE = src.bot.shared.AFTER_NONE
 
 
 def get_total_size(download: Download):
@@ -19,17 +17,6 @@ def is_completed(dl: Download) -> bool:
     if 0 < total == dl.completed_length:
         return True
     return False
-
-
-def _resolve_parent_label(parent_key: str) -> str | None:
-    if parent_key == AFTER_NONE:
-        return None
-    if parent_key.startswith("__task_"):
-        gid = src.bot.shared.after_gid_map.get(parent_key)
-        if gid and gid != "__failed__":
-            return gid
-        return None
-    return parent_key
 
 
 def _build_download_row(index: int, download: Download) -> str:
@@ -66,24 +53,15 @@ def _build_download_row(index: int, download: Download) -> str:
 def _build_after_rows() -> list[str]:
     rows: list[str] = []
 
-    for parent_key, tasks in src.bot.shared.after_queue.items():
-        parent_label = _resolve_parent_label(parent_key)
-        for task in tasks:
-            truncated = task["link"][:128] if len(task["link"]) > 128 else task["link"]
-            url = html.escape(truncated)
-            after_gid = f"<code>{parent_label}</code>" if parent_label else "-"
-            rows.append(f"""<tr>
-<td>{url}</td>
-<td>{after_gid}</td>
-</tr>""")
-
-    for batch in src.bot.shared.after_batch:
-        truncated = batch["link"][:128] if len(batch["link"]) > 128 else batch["link"]
+    for task in src.bot.after.after_tasks:
+        truncated = f"{task.link[:128]}. . ." if len(task.link) > 128 else task.link
         url = html.escape(truncated)
-        after_gid = f"<b>{len(batch['parents'])}</b> download(s)"
+        parents = ", ".join([html.escape(parent) for parent in task.parents]) if task.parents and len(task.parents) > 0 else "Does not have parents."
+        parents = f"<code>{parents}</code>"
         rows.append(f"""<tr>
+<td><code>{task.id}</code></td>
 <td>{url}</td>
-<td>{after_gid}</td>
+<td>{parents}</td>
 </tr>""")
 
     return rows
@@ -109,7 +87,7 @@ def _join_into_messages(
     current += "\n</table>"
 
     if after_rows:
-        after_head = "\n\n## After\n---\n\n<table>\n<tr>\n<td>URL</td>\n<td>Task</td>\n</tr>"
+        after_head = "\n\n## After\n---\n\n<table>\n<tr>\n<td>ID</td>\n<td>URL</td>\n<td>Task</td>\n</tr>"
         after_foot = "\n</table>"
         after_rows_str = "\n".join(after_rows)
         after_block = after_head + "\n" + after_rows_str + after_foot
@@ -119,12 +97,12 @@ def _join_into_messages(
         else:
             if current:
                 messages.append(current)
-            current = "## After\n---\n\n<table>\n<tr>\n<td>URL</td>\n<td>Task</td>\n</tr>"
+            current = "## After\n---\n\n<table>\n<tr>\n<td>ID</td>\n<td>URL</td>\n<td>Task</td>\n</tr>"
             for row in after_rows:
                 if len(current) + 1 + len(row) > max_len:
                     current += "\n</table>"
                     messages.append(current)
-                    current = "<table>\n<tr>\n<td>URL</td>\n<td>Task</td>\n</tr>\n" + row
+                    current = "<table>\n<tr>\n<td>ID</td>\n<td>URL</td>\n<td>Task</td>\n</tr>\n" + row
                 else:
                     current += "\n" + row
             current += "\n</table>"
@@ -147,7 +125,7 @@ def get_status(filter_str: str | None = None) -> list[str]:
     else:
         downloads = list(enumerate(all_downloads))
 
-    if not downloads and not src.bot.shared.after_queue and not src.bot.shared.after_batch:
+    if not downloads and not src.bot.after.after_tasks:
         return ["🤷 There are no torrents currently"]
 
     download_rows = [_build_download_row(i, d) for i, d in downloads]

@@ -7,6 +7,7 @@ import src.bot.settings
 import src.bot.shared
 import src.bot.states
 import src.bot.upload
+import src.bot.after
 
 # TODO: Move all descriptions for commands to here
 def initialize():
@@ -76,12 +77,13 @@ def initialize():
         commands=['upload_cancel']
     )
 
-    # receiver.py
+    # after.py
     src.bot.bot.register_message_handler(
-        src.bot.security.restricted(src.bot.receiver.after_command),
+        src.bot.security.restricted(src.bot.after.after_command),
         commands=['after']
     )
 
+    # receiver.py
     src.bot.bot.register_message_handler(
         src.bot.security.restricted(src.bot.receiver.handle_source),
         content_types=["document", "text"]

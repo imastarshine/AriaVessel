@@ -76,7 +76,6 @@ async def restart_command(m: Message):
 async def control_command(m: Message):
     try:
         parts = m.text.split()
-        # TODO: Message builder
 
         if len(parts) < 2:
             await src.bot.bot.reply_to(m, "❌ Specify ID(s). Example: <code>/pause 0</code>", parse_mode="HTML")

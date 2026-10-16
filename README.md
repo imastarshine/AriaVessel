@@ -14,8 +14,8 @@ A Telegram bot that manages aria2 downloads and optionally uploads completed fil
 | `/del <id>` | Remove download and delete its files |
 | `/restart <id>` | Re-add an HTTP download from scratch |
 | `/inspect <idx>` | Show details about a specific download |
-| `/after <link>` | Queue a link to start after all active downloads finish |
-| `/after <id> <link>` | Queue a link after a specific download |
+| `/after <link>` | Queue a link behind the last queued `/after` task, or start immediately if the queue is empty |
+| `/after <id\|gid\|after-id> <link>` | Queue a link after a specific download or another `/after` task |
 | `/upload <id>` | Upload completed files to Yandex.Disk |
 | `/upload_status` | Check upload progress |
 | `/upload_cancel` | Stop the current upload |
@@ -28,7 +28,7 @@ You can send `.torrent` files, `.zip` archives (the bot extracts `.torrent` file
 
 The bot talks to aria2 over JSON-RPC. When you add a download, it pauses, asks for confirmation, and resumes once you confirm. You can check what you are adding before it starts.
 
-The `/after` command chains downloads. Without an explicit parent, it waits for all active downloads then starts. If nothing is running, it starts right away. Specify a download by index or GID, or chain multiple `/after` calls sequentially.
+The `/after` command chains downloads. Without an explicit parent, a new task chains after the last queued `/after` task; if the queue is empty, it starts immediately. With an explicit parent you can wait for a specific download (by index or GID) or for another `/after` task by its `after-<id>`. Several `/after` calls run one after another.
 
 The bot supports filename renaming, transliteration, and slugification for HTTP downloads. Toggle them from `/settings`.
 
@@ -36,10 +36,10 @@ The bot supports filename renaming, transliteration, and slugification for HTTP 
 
 ### .txt
 
-The bot reads a .txt file and decides what to do based on content:
+The bot reads a .txt file line by line:
 
-- All lines start with `/after` — queued via `/after` (each link waits for the previous one)
-- Otherwise — URLs (`magnet:`, `https://`, `http://`) are extracted and added directly
+- `magnet:` or `http(s)://` — added directly
+- `/after http(s)://...` — queued as an `/after` task (each waits for the previous one)
 
 ```
 magnet:?xt=urn:btih:...
@@ -47,11 +47,13 @@ https://example.com/file.iso
 ```
 
 ```
-/after magnet:?xt=urn:btih:...
-/after https://example.com/file.iso
+/after https://example.com/file1.iso
+/after https://example.com/file2.iso
 ```
 
-You can mix `/after` with plain URLs in the same file — only the URLs will be extracted and added directly, `/after` lines are ignored in mixed mode.
+You can mix both in the same file — plain links and magnets are added directly, `/after` lines are queued. The bot replies with how many `/after` tasks it queued.
+
+Note: `/after` only accepts `http(s)://` links, not magnets.
 
 ### .zip
 

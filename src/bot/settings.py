@@ -210,5 +210,5 @@ async def process_settings_callback(call: CallbackQuery):
         except Exception as e:
             logger.exception(f"an error occurred on set str value for setting: {setting}", exc_info=e)
     else:
-        # TODO: Make it better
+        logger.warning(f"cannot change setting {setting}: unsupported value type {type(value).__name__}")
         await src.bot.bot.answer_callback_query(call.id, text="Cannot change this")

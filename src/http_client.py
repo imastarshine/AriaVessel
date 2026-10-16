@@ -1,9 +1,14 @@
 import asyncio
 import dataclasses
 import re
+from pathlib import Path
 from urllib.parse import urlparse, unquote
 
 from curl_cffi import requests
+from slugify import slugify
+
+import src.configs
+import src.text
 
 
 @dataclasses.dataclass
@@ -106,3 +111,26 @@ async def get_file_metadata(url: str) -> FileMetadataResult:
         metadata.error = f"Unexpected error: {str(e)}"
 
     return metadata
+
+
+def get_uri_options(metadata: FileMetadataResult) -> dict[str, str]:
+    options = {
+        "pause": "true"
+    }
+    if src.configs.config.uri_filename_rename:
+        file_path = Path(metadata.filename)
+        file_suffix = file_path.suffix
+        new_file_name = file_path.stem
+
+        if src.configs.config.uri_filename_translit:
+            new_file_name = src.text.auto_translit(new_file_name)
+
+        if src.configs.config.uri_filename_slugify:
+            new_file_name = slugify(new_file_name)
+
+        if 0 < src.configs.config.uri_filename_max_length < len(new_file_name):
+            new_file_name = new_file_name[:src.configs.config.uri_filename_max_length]
+
+        options["out"] = f"{new_file_name}{file_suffix}"
+
+    return options
